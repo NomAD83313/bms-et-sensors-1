@@ -26,6 +26,7 @@ class MesskluppeBringupDocsTests(unittest.TestCase):
 
         self.assertIn("./scripts/messkluppe-radio-smoke.sh", text)
         self.assertIn("/messkluppe/api/radio/recent-payloads", text)
+        self.assertIn("/messkluppe/api/radio/recent-commands", text)
         self.assertIn("/api/ingest-hex", text)
 
 

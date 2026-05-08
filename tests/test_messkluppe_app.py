@@ -19,6 +19,8 @@ class MesskluppeAppControlTests(unittest.TestCase):
         self.assertTrue(payload["status"]["logging"])
         self.assertEqual(payload["status"]["sample_rate"], 500)
         self.assertEqual(payload["status"]["logging_time"], 12)
+        self.assertEqual(payload["command"]["action"], "start_logging")
+        self.assertTrue(payload["command"]["payload_hex"].startswith("fc030000"))
 
     def test_reset_mode_returns_to_idle(self):
         self.client.post("/api/clip/start-logging", json={"sample_rate": 500, "logging_time": 12})
@@ -144,6 +146,8 @@ class MesskluppeAppControlTests(unittest.TestCase):
         self.assertIn("radio_rx_last_error", payload)
         self.assertIn("radio_rx_last_payload_hex", payload)
         self.assertIn("radio_rx_recent_payloads", payload)
+        self.assertIn("radio_tx_commands", payload)
+        self.assertIn("radio_tx_last_payload_hex", payload)
 
     def test_radio_recent_payloads_endpoint_returns_ring_buffer(self):
         with messkluppe_app._state_lock:
@@ -188,6 +192,27 @@ class MesskluppeAppControlTests(unittest.TestCase):
 
         self.assertEqual(len(snap["radio_rx_recent_payloads"]), messkluppe_app.MESSKLUPPE_RADIO_RECENT_PAYLOADS)
         self.assertEqual(snap["radio_rx_last_payload_hex"], f"{messkluppe_app.MESSKLUPPE_RADIO_RECENT_PAYLOADS + 1:02x}")
+
+    def test_radio_recent_commands_endpoint_returns_tx_audit_trail(self):
+        self.client.post("/api/clip/deep-sleep/start")
+
+        response = self.client.get("/api/radio/recent-commands")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertGreaterEqual(payload["count"], 1)
+        self.assertEqual(payload["commands"][-1]["action"], "start_deep_sleep")
+        self.assertTrue(payload["commands"][-1]["payload_hex"].startswith("f2030000"))
+
+    def test_file_list_builds_legacy_tx_payload(self):
+        response = self.client.get("/api/clip/files")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["command"]["action"], "list_files")
+        self.assertTrue(payload["command"]["payload_hex"].startswith("06040000"))
 
 
 if __name__ == "__main__":

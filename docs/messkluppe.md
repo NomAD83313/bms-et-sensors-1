@@ -67,6 +67,7 @@ HTTP endpoints:
 - `POST /api/fake-once`, `POST /api/fake/start`, and `POST /api/fake/stop`: compatibility aliases for the mock node endpoints.
 - `POST /api/ingest-hex`: ingest one 32-byte legacy payload as hex, useful for replay tests.
 - `GET /api/radio/recent-payloads`: returns the in-memory recent raw radio payload ring buffer as hex.
+- `GET /api/radio/recent-commands`: returns the in-memory recent host command payload ring buffer as hex.
 - In radio mode, startup begins the RX loop automatically. `GET /api/status` exposes `radio_listening`, `radio_rx_ready`, `radio_rx_packets`, `radio_rx_empty_reads`, `radio_rx_last_at`, `radio_rx_last_payload_hex`, `radio_rx_recent_payloads`, `radio_rx_parse_errors`, and `radio_rx_last_error`.
 
 Legacy-compatible control API skeleton:
@@ -95,6 +96,7 @@ Relevant environment variables:
 - `MESSKLUPPE_FAKE_INTERVAL_SEC` default `5.0`.
 - `MESSKLUPPE_RADIO_POLL_SEC` default `0.05`.
 - `MESSKLUPPE_RADIO_RECENT_PAYLOADS` default `10`.
+- `MESSKLUPPE_CLIP_ID` default `1`.
 - `MESSKLUPPE_INFLUX_MEASUREMENT` default `messkluppe_sensor`.
 - `MESSKLUPPE_SOURCE_TAG` default `messkluppe`.
 - `MESSKLUPPE_RADIO_SPI_BUS` default `0`.
@@ -120,6 +122,16 @@ Radio RX telemetry:
 - `radio_rx_recent_payloads`: recent raw payload ring buffer kept in memory only.
 - `radio_rx_parse_errors`: radio payloads that reached the decoder but failed parsing.
 - `radio_rx_last_error`: last runtime RX error, if any.
+
+Radio TX telemetry:
+
+- `radio_tx_commands`: host commands converted to legacy radio payloads.
+- `radio_tx_last_action`: last command action name.
+- `radio_tx_last_payload_hex`: last host command payload as hex.
+- `radio_tx_recent_commands`: recent command ring buffer kept in memory only.
+- `radio_tx_errors`: command payload build failures.
+
+The current TX layer builds and records legacy command payloads. Hardware transmission is intentionally still pending while the host RX loop owns the radio in PRX mode. This keeps the first bring-up stable and gives a visible command payload audit trail before node validation.
 
 ## Visualization
 

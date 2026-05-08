@@ -12,13 +12,51 @@ from influxdb_client.client.write_api import SYNCHRONOUS  # type: ignore
 
 try:
     from .messkluppe_mock_node import build_mock_node_sample
-    from .messkluppe_protocol import decode_file_data_packet
+    from .messkluppe_protocol import (
+        DEFAULT_CLIP_ID,
+        TASK_DEEP_SLEEP,
+        TASK_FILE_DELETE,
+        TASK_FILE_DELETE_ALL,
+        TASK_FILE_DOWNLOAD,
+        TASK_FILE_LIST,
+        TASK_IDLE,
+        TASK_LIVE_DATA,
+        build_ack_command,
+        build_delete_all_command,
+        build_delete_file_command,
+        build_file_download_command,
+        build_file_list_command,
+        build_logging_command,
+        build_ping_command,
+        decode_file_data_packet,
+        make_id_task,
+        words_to_radio_bytes_32,
+    )
     from .messkluppe_radio_diag import radio_diag_config_from_env, run_radio_diagnostics
     from .messkluppe_radio_rx import MesskluppeRadioRx
     from .messkluppe_records import DEFAULT_MEASUREMENT, MesskluppeInfluxRecord, file_packet_to_influx_record
 except ImportError:
     from messkluppe_mock_node import build_mock_node_sample
-    from messkluppe_protocol import decode_file_data_packet
+    from messkluppe_protocol import (
+        DEFAULT_CLIP_ID,
+        TASK_DEEP_SLEEP,
+        TASK_FILE_DELETE,
+        TASK_FILE_DELETE_ALL,
+        TASK_FILE_DOWNLOAD,
+        TASK_FILE_LIST,
+        TASK_IDLE,
+        TASK_LIVE_DATA,
+        build_ack_command,
+        build_delete_all_command,
+        build_delete_file_command,
+        build_file_download_command,
+        build_file_list_command,
+        build_logging_command,
+        build_ping_command,
+        decode_file_data_packet,
+        make_id_task,
+        words_to_radio_bytes_32,
+    )
     from messkluppe_radio_diag import radio_diag_config_from_env, run_radio_diagnostics
     from messkluppe_radio_rx import MesskluppeRadioRx
     from messkluppe_records import DEFAULT_MEASUREMENT, MesskluppeInfluxRecord, file_packet_to_influx_record
@@ -32,6 +70,7 @@ if MESSKLUPPE_INPUT_MODE not in {"mock", "radio", "disabled"}:
 MESSKLUPPE_FAKE_INTERVAL_SEC = float(os.getenv("MESSKLUPPE_FAKE_INTERVAL_SEC", "5.0"))
 MESSKLUPPE_RADIO_POLL_SEC = float(os.getenv("MESSKLUPPE_RADIO_POLL_SEC", "0.05"))
 MESSKLUPPE_RADIO_RECENT_PAYLOADS = max(1, int(os.getenv("MESSKLUPPE_RADIO_RECENT_PAYLOADS", "10")))
+MESSKLUPPE_CLIP_ID = max(1, int(os.getenv("MESSKLUPPE_CLIP_ID", str(DEFAULT_CLIP_ID))))
 MESSKLUPPE_MEASUREMENT = os.getenv("MESSKLUPPE_INFLUX_MEASUREMENT", DEFAULT_MEASUREMENT).strip() or DEFAULT_MEASUREMENT
 MESSKLUPPE_SOURCE_TAG = os.getenv("MESSKLUPPE_SOURCE_TAG", "messkluppe").strip() or "messkluppe"
 INFLUX_URL = os.getenv("INFLUX_URL", "http://influxdb:8086").strip()
@@ -81,6 +120,13 @@ _state: dict[str, Any] = {
     "radio_rx_recent_payloads": [],
     "radio_rx_parse_errors": 0,
     "radio_runtime": None,
+    "radio_tx_commands": 0,
+    "radio_tx_errors": 0,
+    "radio_tx_last_at": None,
+    "radio_tx_last_action": "",
+    "radio_tx_last_payload_hex": "",
+    "radio_tx_last_error": "",
+    "radio_tx_recent_commands": [],
     "packets_received": 0,
     "records_written": 0,
     "write_errors": 0,
@@ -301,6 +347,9 @@ __COMMON_CSS__
         ['Radio last payload', data.radio_rx_last_payload_hex || '-'],
         ['Radio parse errors', data.radio_rx_parse_errors ?? 0],
         ['Radio error', data.radio_rx_last_error || '-'],
+        ['Radio TX commands', data.radio_tx_commands ?? 0],
+        ['Radio last TX', data.radio_tx_last_action ? `${data.radio_tx_last_action}: ${data.radio_tx_last_payload_hex || '-'}` : '-'],
+        ['Radio TX error', data.radio_tx_last_error || '-'],
         ['Influx configured', data.influx_configured ? 'yes' : 'no'],
         ['Last packet', fmtTime(data.last_packet_at)],
         ['Last write', fmtTime(data.last_write_at)],
@@ -433,6 +482,68 @@ def _mark_last_radio_payload_result(*, ok: bool, error: str = "") -> None:
             _state["radio_rx_recent_payloads"] = recent
 
 
+def _timestamp_ms() -> int:
+    return int(time.time() * 1000) & 0xFFFFFFFF
+
+
+def _command_payload_for_action(action: str, payload: dict[str, Any] | None = None) -> bytes:
+    data = payload or {}
+    clip_id = _int_payload_value(data, "clip_id", MESSKLUPPE_CLIP_ID, minimum=1, maximum=65)
+    timestamp_ms = _timestamp_ms()
+    if action == "ping":
+        return build_ping_command(clip_id, timestamp_ms)
+    if action == "start_logging":
+        sample_rate = _int_payload_value(data, "sample_rate", int(_state_snapshot().get("sample_rate", 2500)), minimum=1, maximum=100000)
+        logging_time = _int_payload_value(data, "logging_time", int(_state_snapshot().get("logging_time", 100)), minimum=1, maximum=86400)
+        return build_logging_command(clip_id, timestamp_ms, int(time.time()), sample_rate, logging_time)
+    if action in {"stop_logging", "reset_mode", "stop_live", "stop_deep_sleep"}:
+        return build_ack_command(clip_id, timestamp_ms)
+    if action == "start_deep_sleep":
+        return words_to_radio_bytes_32([make_id_task(clip_id, TASK_DEEP_SLEEP), timestamp_ms])
+    if action == "start_live":
+        return words_to_radio_bytes_32([make_id_task(clip_id, TASK_LIVE_DATA), timestamp_ms])
+    if action == "list_files":
+        return build_file_list_command(clip_id, timestamp_ms)
+    if action == "download_file":
+        filename_epoch = _int_payload_value(data, "filename_epoch", _int_payload_value(data, "filename", 0, minimum=0, maximum=0xFFFFFFFF), minimum=0, maximum=0xFFFFFFFF)
+        first_line = _int_payload_value(data, "first_line", 0, minimum=0, maximum=0xFFFFFFFF)
+        line_count = _int_payload_value(data, "lines", 0, minimum=0, maximum=0xFFFFFFFF)
+        return build_file_download_command(clip_id, timestamp_ms, filename_epoch, first_line, line_count)
+    if action == "delete_file":
+        filename_epoch = _int_payload_value(data, "filename_epoch", _int_payload_value(data, "filename", 0, minimum=0, maximum=0xFFFFFFFF), minimum=0, maximum=0xFFFFFFFF)
+        return build_delete_file_command(clip_id, timestamp_ms, filename_epoch)
+    if action == "delete_all_files":
+        return build_delete_all_command(clip_id, timestamp_ms)
+    return words_to_radio_bytes_32([make_id_task(clip_id, TASK_IDLE), timestamp_ms])
+
+
+def _record_tx_command(action: str, payload: bytes, *, accepted: bool, detail: str = "", error: str = "") -> dict[str, Any]:
+    item = {
+        "action": action,
+        "accepted": accepted,
+        "detail": detail,
+        "payload_hex": payload.hex(),
+        "size": len(payload),
+        "error": error,
+        "ts": time.time(),
+    }
+    with _state_lock:
+        recent = list(_state.get("radio_tx_recent_commands") or [])
+        recent.append(item)
+        _state["radio_tx_recent_commands"] = recent[-MESSKLUPPE_RADIO_RECENT_PAYLOADS:]
+        _state["radio_tx_last_at"] = item["ts"]
+        _state["radio_tx_last_action"] = action
+        _state["radio_tx_last_payload_hex"] = item["payload_hex"]
+        _state["radio_tx_last_error"] = error
+        _state["last_command"] = item
+        if accepted:
+            _state["radio_tx_commands"] = int(_state.get("radio_tx_commands", 0)) + 1
+        else:
+            _state["radio_tx_errors"] = int(_state.get("radio_tx_errors", 0)) + 1
+            _state["command_errors"] = int(_state.get("command_errors", 0)) + 1
+    return item
+
+
 def _state_snapshot() -> dict[str, Any]:
     with _state_lock:
         snap = dict(_state)
@@ -457,8 +568,10 @@ def _command_result(action: str, *, accepted: bool, detail: str = "") -> dict[st
     return payload
 
 
-def _fake_accept(action: str) -> dict[str, Any]:
-    return _command_result(action, accepted=True, detail="accepted_in_mock_mode")
+def _accept_command(action: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    command_payload = _command_payload_for_action(action, payload)
+    detail = "tx_payload_built_mock_mode" if MESSKLUPPE_INPUT_MODE == "mock" else "tx_payload_built_radio_tx_pending"
+    return _record_tx_command(action, command_payload, accepted=True, detail=detail)
 
 
 def _not_implemented(action: str) -> dict[str, Any]:
@@ -468,8 +581,12 @@ def _not_implemented(action: str) -> dict[str, Any]:
 def _apply_control_action(action: str, updates: dict[str, Any]) -> tuple[dict[str, Any], int]:
     with _state_lock:
         _state.update(updates)
-    result = _fake_accept(action) if MESSKLUPPE_INPUT_MODE == "mock" else _not_implemented(action)
-    status = 200 if result["accepted"] else 501
+    try:
+        result = _accept_command(action, updates)
+        status = 200
+    except Exception as exc:
+        result = _record_tx_command(action, b"", accepted=False, detail="tx_payload_build_failed", error=str(exc))
+        status = 400
     return {"ok": result["accepted"], "command": result, "status": _state_snapshot()}, status
 
 
@@ -709,6 +826,22 @@ def api_radio_recent_payloads():
     )
 
 
+@app.route("/api/radio/recent-commands", methods=["GET"])
+def api_radio_recent_commands():
+    snap = _state_snapshot()
+    commands = snap.get("radio_tx_recent_commands", [])
+    return jsonify(
+        {
+            "ok": True,
+            "commands": commands,
+            "last_action": snap.get("radio_tx_last_action", ""),
+            "last_payload_hex": snap.get("radio_tx_last_payload_hex", ""),
+            "count": len(commands),
+            "max_count": MESSKLUPPE_RADIO_RECENT_PAYLOADS,
+        }
+    )
+
+
 @app.route("/api/fake-once", methods=["POST"])
 def api_fake_once():
     return api_mock_node_once()
@@ -798,8 +931,8 @@ def api_clip_live_stop():
 
 @app.route("/api/clip/files", methods=["GET"])
 def api_clip_files():
-    result = _fake_accept("list_files") if MESSKLUPPE_INPUT_MODE == "mock" else _not_implemented("list_files")
-    status = 200 if result["accepted"] else 501
+    result = _accept_command("list_files")
+    status = 200
     return jsonify({"ok": result["accepted"], "command": result, "files": _state_snapshot().get("online_files", []), "status": _state_snapshot()}), status
 
 
@@ -808,8 +941,8 @@ def api_clip_file_download():
     payload = _json_payload()
     filename = str(payload.get("filename", "")).strip()
     lines = _int_payload_value(payload, "lines", 0, minimum=0, maximum=10_000_000)
-    result = _fake_accept("download_file") if MESSKLUPPE_INPUT_MODE == "mock" else _not_implemented("download_file")
-    status = 200 if result["accepted"] else 501
+    result = _accept_command("download_file", {"filename": filename, "lines": lines})
+    status = 200
     return jsonify({"ok": result["accepted"], "command": result, "filename": filename, "lines": lines, "status": _state_snapshot()}), status
 
 
@@ -817,8 +950,8 @@ def api_clip_file_download():
 def api_clip_file_delete():
     payload = _json_payload()
     filename = str(payload.get("filename", "")).strip()
-    result = _fake_accept("delete_file") if MESSKLUPPE_INPUT_MODE == "mock" else _not_implemented("delete_file")
-    status = 200 if result["accepted"] else 501
+    result = _accept_command("delete_file", {"filename": filename})
+    status = 200
     return jsonify({"ok": result["accepted"], "command": result, "filename": filename, "status": _state_snapshot()}), status
 
 
@@ -826,8 +959,8 @@ def api_clip_file_delete():
 def api_clip_files_delete_all():
     with _state_lock:
         _state["online_files"] = []
-    result = _fake_accept("delete_all_files") if MESSKLUPPE_INPUT_MODE == "mock" else _not_implemented("delete_all_files")
-    status = 200 if result["accepted"] else 501
+    result = _accept_command("delete_all_files")
+    status = 200
     return jsonify({"ok": result["accepted"], "command": result, "status": _state_snapshot()}), status
 
 

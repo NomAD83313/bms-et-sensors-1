@@ -79,6 +79,14 @@ Recent raw payloads:
 curl -fsS http://127.0.0.1/messkluppe/api/radio/recent-payloads | python -m json.tool
 ```
 
+Recent host command payloads:
+
+```bash
+curl -fsS http://127.0.0.1/messkluppe/api/radio/recent-commands | python -m json.tool
+```
+
+The command TX layer currently builds and records legacy command payload hex. Hardware TX is still pending until the node is available for request/response validation.
+
 Replay one captured payload:
 
 ```bash
