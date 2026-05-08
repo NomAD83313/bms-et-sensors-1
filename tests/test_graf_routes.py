@@ -49,6 +49,7 @@ def _build_ctx(**overrides):
                 "almemo_live": [],
                 "pyrometers_temperature": [],
                 "messkluppe_force": [],
+                "messkluppe_orientation": [],
                 "matter_temperature": [],
             },
             {
@@ -57,6 +58,7 @@ def _build_ctx(**overrides):
                 "almemo_live": {"raw_cadence_ms": None},
                 "pyrometers_temperature": {"raw_cadence_ms": None},
                 "messkluppe_force": {"raw_cadence_ms": None},
+                "messkluppe_orientation": {"raw_cadence_ms": None},
                 "matter_temperature": {"raw_cadence_ms": None},
             },
         )
@@ -98,6 +100,7 @@ def _build_ctx(**overrides):
         "load_almemo_series_fn": lambda *_args: [],
         "load_pyrometers_series_fn": lambda *_args: [],
         "load_messkluppe_series_fn": lambda *_args: [],
+        "load_messkluppe_orientation_series_fn": lambda *_args: [],
         "load_matter_series_fn": lambda *_args: [],
         "panel_raw_cadence_ms_fn": lambda *_args: None,
         "build_single_export_response": build_single_export_response,

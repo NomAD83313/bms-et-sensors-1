@@ -10,6 +10,7 @@ _PANEL_ORDER: list[tuple[str, str]] = [
     ("show_almemo", "c4"),
     ("show_pyrometers", "c5"),
     ("show_messkluppe", "c6"),
+    ("show_messkluppe_orientation", "c7"),
 ]
 
 VIEW_CONFIGS: dict[str, dict[str, Any]] = {
@@ -21,6 +22,7 @@ VIEW_CONFIGS: dict[str, dict[str, Any]] = {
         "show_almemo": True,
         "show_pyrometers": True,
         "show_messkluppe": True,
+        "show_messkluppe_orientation": True,
     },
     "redlab": {
         "title": "Graf App Lite · RedLab",
@@ -113,14 +115,7 @@ VIEW_CONFIGS: dict[str, dict[str, Any]] = {
         "show_almemo": False,
         "show_pyrometers": False,
         "show_messkluppe": True,
-        "device": {
-            "panel_title": "Messkluppe Force",
-            "chart_id": "c6",
-            "list_id": "seriesChannelList-c6",
-            "toggle_all_id": "seriesChannelToggleAll-c6",
-            "list_kind": "series",
-            "export_kind": "messkluppe",
-        },
+        "show_messkluppe_orientation": True,
     },
 }
 
@@ -165,9 +160,10 @@ def render_index(
         show_almemo=bool(cfg.get("show_almemo", False)),
         show_pyrometers=bool(cfg.get("show_pyrometers", False)),
         show_messkluppe=bool(cfg.get("show_messkluppe", False)),
+        show_messkluppe_orientation=bool(cfg.get("show_messkluppe_orientation", False)),
         chart_ids=[cid for flag, cid in _PANEL_ORDER if cfg.get(flag)],
         export_modals=_export_modals(view_name, cfg),
-        single_device_mode=view_name in {"redlab", "mscl", "matter", "almemo", "pyrometers", "messkluppe"},
+        single_device_mode=view_name in {"redlab", "mscl", "matter", "almemo", "pyrometers"},
         device=cfg.get("device"),
         default_range=default_range,
         default_refresh_sec=default_refresh_sec,

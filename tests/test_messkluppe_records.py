@@ -1,7 +1,24 @@
 import unittest
 
-from app.messkluppe.messkluppe_protocol import TASK_FILE_DOWNLOAD, decode_file_data_packet, make_id_task, words16_to_legacy_payload
-from app.messkluppe.messkluppe_records import file_packet_to_fields, file_packet_to_influx_record, record_to_line_protocol
+from app.messkluppe.messkluppe_protocol import (
+    TASK_FILE_DOWNLOAD,
+    TASK_IDLE,
+    TASK_LIVE_DATA,
+    decode_file_data_packet,
+    decode_live_data_packet,
+    decode_ping_packet,
+    make_id_task,
+    words16_to_legacy_payload,
+)
+from app.messkluppe.messkluppe_records import (
+    file_packet_to_fields,
+    file_packet_to_influx_record,
+    live_packet_to_fields,
+    live_packet_to_influx_record,
+    ping_packet_to_fields,
+    ping_packet_to_influx_record,
+    record_to_line_protocol,
+)
 
 
 class MesskluppeRecordTests(unittest.TestCase):
@@ -53,6 +70,87 @@ class MesskluppeRecordTests(unittest.TestCase):
         self.assertIn("force_x_raw=-2i", line)
         self.assertIn("yaw_deg=123.4", line)
         self.assertTrue(line.endswith(str(record.time_ns)))
+
+    def test_live_packet_to_fields_uses_live_word_layout(self):
+        packet = decode_live_data_packet(words16_to_legacy_payload([
+            make_id_task(1, TASK_LIVE_DATA),
+            0x0003,
+            0x0768,
+            423,
+            326,
+            307,
+            309,
+            299,
+            270,
+            2276,
+            4076,
+            77,
+            0,
+            1,
+            3,
+            777,
+        ]))
+
+        fields = live_packet_to_fields(packet)
+        record = live_packet_to_influx_record(packet, file_id="radio")
+
+        self.assertEqual(fields["node_millis"], 0x00030768)
+        self.assertEqual(fields["force_x_raw"], 307)
+        self.assertEqual(fields["force_y_raw"], 309)
+        self.assertEqual(fields["force_z_raw"], 299)
+        self.assertEqual(fields["accel_x_raw"], 270)
+        self.assertEqual(fields["accel_y_raw"], 2276)
+        self.assertEqual(fields["yaw_raw"], 4076)
+        self.assertEqual(fields["yaw_deg"], 47.6)
+        self.assertEqual(record.tags["packet_task"], "60")
+        self.assertIsNone(record.time_ns)
+
+    def test_yaw_degrees_are_normalized_to_one_turn(self):
+        packet = decode_live_data_packet(words16_to_legacy_payload([
+            make_id_task(1, TASK_LIVE_DATA),
+            0x0000,
+            0x0001,
+            0,
+            0,
+            100,
+            200,
+            300,
+            400,
+            500,
+            4076,
+            77,
+            0,
+            1,
+            0,
+            0,
+        ]))
+
+        fields = live_packet_to_fields(packet)
+
+        self.assertEqual(fields["yaw_raw"], 4076)
+        self.assertEqual(fields["yaw_deg"], 47.6)
+
+    def test_ping_packet_to_fields_keeps_status_out_of_sensor_fields(self):
+        packet = decode_ping_packet(words16_to_legacy_payload([
+            make_id_task(1, TASK_IDLE),
+            0x0004,
+            0x93AE,
+            100,
+            9500,
+            3,
+            *([0] * 10),
+        ]))
+
+        fields = ping_packet_to_fields(packet)
+        record = ping_packet_to_influx_record(packet, file_id="radio")
+
+        self.assertEqual(fields["node_millis"], 0x000493AE)
+        self.assertEqual(fields["ping_ms"], 100)
+        self.assertEqual(fields["success_percent_x100"], 9500)
+        self.assertEqual(fields["success_ratio"], 95.0)
+        self.assertEqual(fields["file_count"], 3)
+        self.assertNotIn("force_x_raw", fields)
+        self.assertEqual(record.tags["packet_task"], "0")
 
 
 if __name__ == "__main__":

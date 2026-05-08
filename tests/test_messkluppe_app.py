@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from app.messkluppe import messkluppe_app
+from app.messkluppe.messkluppe_protocol import TASK_IDLE, TASK_LIVE_DATA, make_id_task, words16_to_legacy_payload
 
 
 class MesskluppeAppControlTests(unittest.TestCase):
@@ -135,6 +136,55 @@ class MesskluppeAppControlTests(unittest.TestCase):
         self.assertEqual(payload["status"]["last_record"]["tags"]["file_id"], "mock-node")
         self.assertGreaterEqual(payload["status"]["packets_received"], 1)
 
+    @patch.object(messkluppe_app, "_write_record", return_value=True)
+    def test_ingest_payload_decodes_ping_as_status_record(self, _write_record):
+        payload = words16_to_legacy_payload([
+            make_id_task(1, TASK_IDLE),
+            0x0004,
+            0x93AE,
+            100,
+            9500,
+            3,
+            *([0] * 10),
+        ])
+
+        self.assertTrue(messkluppe_app.ingest_payload(payload, file_id="radio"))
+
+        fields = messkluppe_app._state_snapshot()["last_record"]["fields"]
+        self.assertEqual(fields["ping_ms"], 100)
+        self.assertEqual(fields["file_count"], 3)
+        self.assertNotIn("force_x_raw", fields)
+
+    @patch.object(messkluppe_app, "_write_record", return_value=True)
+    def test_ingest_payload_decodes_live_sensor_layout(self, _write_record):
+        payload = words16_to_legacy_payload([
+            make_id_task(1, TASK_LIVE_DATA),
+            0x0003,
+            0x0768,
+            423,
+            326,
+            307,
+            309,
+            299,
+            270,
+            2276,
+            4076,
+            77,
+            0,
+            1,
+            3,
+            777,
+        ])
+
+        self.assertTrue(messkluppe_app.ingest_payload(payload, file_id="radio"))
+
+        record = messkluppe_app._state_snapshot()["last_record"]
+        self.assertEqual(record["tags"]["packet_task"], "60")
+        self.assertEqual(record["fields"]["force_x_raw"], 307)
+        self.assertEqual(record["fields"]["accel_x_raw"], 270)
+        self.assertEqual(record["fields"]["yaw_raw"], 4076)
+        self.assertEqual(record["fields"]["yaw_deg"], 47.6)
+
     def test_status_includes_radio_runtime_telemetry(self):
         response = self.client.get("/api/status")
 
@@ -217,6 +267,23 @@ class MesskluppeAppControlTests(unittest.TestCase):
         self.assertEqual(payload["command"]["action"], "list_files")
         self.assertTrue(payload["command"]["payload_hex"].startswith("06040000"))
 
+    def test_file_list_enables_radio_repeat_until_node_replies(self):
+        old_values = {}
+        with messkluppe_app._state_lock:
+            for key in ("radio_repeat_action", "radio_repeat_payload"):
+                old_values[key] = messkluppe_app._state.get(key)
+            messkluppe_app._state.update(radio_repeat_action="", radio_repeat_payload=None)
+        try:
+            with patch.object(messkluppe_app, "MESSKLUPPE_INPUT_MODE", "mock"):
+                response = self.client.get("/api/clip/files")
+            self.assertEqual(response.status_code, 200)
+            snap = messkluppe_app._state_snapshot()
+            self.assertEqual(snap["radio_repeat_action"], "list_files")
+            self.assertEqual(snap["radio_repeat_payload"], {})
+        finally:
+            with messkluppe_app._state_lock:
+                messkluppe_app._state.update(old_values)
+
     def test_radio_mode_queues_ack_payload_for_command(self):
         tx_result = {"ok": True, "pipe": 1, "payload_hex": "24040000c3ac4508", "size": 8}
         with (
@@ -249,6 +316,24 @@ class MesskluppeAppControlTests(unittest.TestCase):
         self.assertEqual(snap["radio_tx_auto_repeats"], before + 1)
         self.assertEqual(snap["radio_tx_last_action"], "start_live")
         self.assertEqual(snap["radio_tx_last_result"]["pipe"], 1)
+
+    def test_send_live_ack_payload_can_preserve_tx_fifo(self):
+        calls = []
+
+        class FakeRadio:
+            config = {"payload_size": 32}
+
+            def write_ack_payload(self, payload, *, pipe=1, flush_tx=True, pad_to=None):
+                calls.append({"pipe": pipe, "flush_tx": flush_tx, "pad_to": pad_to})
+                if pad_to:
+                    payload = payload.ljust(pad_to, b"\x00")
+                return {"ok": True, "pipe": pipe, "payload_hex": payload.hex(), "size": len(payload)}
+
+        messkluppe_app._send_live_ack_payload(FakeRadio(), detail="ack_payload_after_rx_pipe_1", flush_tx=False)
+
+        self.assertEqual(calls, [{"pipe": 1, "flush_tx": False, "pad_to": 32}])
+        self.assertEqual(messkluppe_app._state_snapshot()["radio_tx_last_action"], "start_live")
+        self.assertEqual(messkluppe_app._state_snapshot()["last_command"]["detail"], "ack_payload_after_rx_pipe_1")
 
 
 if __name__ == "__main__":

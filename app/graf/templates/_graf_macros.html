@@ -96,7 +96,7 @@
   </div>
 {%- endmacro %}
 
-{% macro render_panel(chart_id, panel_title, list_kind, list_id, toggle_all_id, export_button_id=None, export_button_label=None) -%}
+{% macro render_panel(chart_id, panel_title, list_kind, list_id, toggle_all_id, export_button_id=None, export_button_label=None, filter_toggle_id=None, filter_toggle_label=None) -%}
   <div class="panel">
     <div class="panel-head">
       <div class="y-controls" data-chart="{{ chart_id }}">
@@ -109,6 +109,13 @@
           <span class="norm-switch"></span>
           <span>Normalize scales</span>
         </label>
+        {% if filter_toggle_id and filter_toggle_label %}
+        <label class="norm-toggle filter-toggle" id="{{ filter_toggle_id }}">
+          <input type="checkbox" />
+          <span class="norm-switch"></span>
+          <span>{{ filter_toggle_label }}</span>
+        </label>
+        {% endif %}
       </div>
       <div class="title-actions">
         <h2>{{ panel_title }}</h2>

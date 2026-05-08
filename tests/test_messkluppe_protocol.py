@@ -4,12 +4,14 @@ from app.messkluppe.messkluppe_protocol import (
     TASK_FILE_DOWNLOAD,
     TASK_FILE_LIST,
     TASK_IDLE,
+    TASK_LIVE_DATA,
     TASK_LOGGING,
     build_file_download_command,
     build_file_list_command,
     build_logging_command,
     build_ping_command,
     decode_file_data_packet,
+    decode_live_data_packet,
     decode_ping_packet,
     make_id_task,
     radio_bytes_to_words_16,
@@ -90,6 +92,33 @@ class MesskluppeProtocolTests(unittest.TestCase):
         self.assertEqual(packet.unix_time, 0x5E2D1234)
         self.assertEqual(packet.line_number, 9)
         self.assertEqual(packet.values, tuple(range(101, 112)))
+
+    def test_decode_live_payload_uses_live_sensor_word_layout(self):
+        payload = words16_to_legacy_payload([
+            make_id_task(1, TASK_LIVE_DATA),
+            0x0003,
+            0x0768,
+            423,
+            326,
+            307,
+            309,
+            299,
+            270,
+            2276,
+            4076,
+            77,
+            0,
+            1,
+            3,
+            777,
+        ])
+
+        packet = decode_live_data_packet(payload)
+
+        self.assertEqual(packet.clip_id, 1)
+        self.assertEqual(packet.task, TASK_LIVE_DATA)
+        self.assertEqual(packet.timestamp_ms, 0x00030768)
+        self.assertEqual(packet.values, (307, 309, 299, 270, 2276, 4076, 77, 0, 1))
 
     def test_build_common_commands(self):
         self.assertEqual(build_ping_command(1, 0x11223344), bytes.fromhex("e803000044332211"))

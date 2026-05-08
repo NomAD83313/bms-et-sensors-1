@@ -15,6 +15,61 @@ function toXY(series) {
   })).filter(s => s.points.length > 0);
 }
 
+function normalizeDegrees(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return n;
+  return ((n % 360) + 360) % 360;
+}
+
+function angularDistance(a, b) {
+  const diff = Math.abs(normalizeDegrees(a) - normalizeDegrees(b));
+  return Math.min(diff, 360 - diff);
+}
+
+function circularMedian(values) {
+  const finite = values.map(normalizeDegrees).filter(Number.isFinite);
+  if (!finite.length) return null;
+  let best = finite[0];
+  let bestScore = Number.POSITIVE_INFINITY;
+  finite.forEach((candidate) => {
+    const score = finite.reduce((acc, value) => acc + angularDistance(candidate, value), 0);
+    if (score < bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  });
+  return best;
+}
+
+function filterYawSpikeSeries(series) {
+  const spikeThresholdDeg = 35;
+  const windowRadius = 3;
+  return (series || []).map((s) => {
+    const normalized = (s.points || []).map((pt) => ({ ...pt, y: normalizeDegrees(pt.y), origY: pt.y }));
+    const points = normalized.map((pt, idx) => {
+      const start = Math.max(0, idx - windowRadius);
+      const end = Math.min(normalized.length, idx + windowRadius + 1);
+      const neighborValues = normalized
+        .slice(start, end)
+        .filter((_item, neighborIdx) => start + neighborIdx !== idx)
+        .map(item => item.y);
+      const median = circularMedian(neighborValues);
+      if (median !== null && angularDistance(pt.y, median) > spikeThresholdDeg) {
+        return { ...pt, y: median, rawY: pt.y };
+      }
+      return pt;
+    });
+    return { name: s.name, points };
+  });
+}
+
+function applyChartDisplayFilters(canvasId, rawSeries) {
+  if (canvasId === "c7" && yawFilterModes[canvasId]) {
+    return filterYawSpikeSeries(rawSeries);
+  }
+  return rawSeries || [];
+}
+
 function nearestPoint(points, targetX) {
   if (!points.length) return null;
   let lo = 0, hi = points.length - 1;
@@ -474,7 +529,8 @@ function renderChart(canvasId, hoverX = null) {
     let html = `<div class=\"tt-time\">${escapeHtml(formatTooltipTime(tRef))}</div>`;
     values.forEach((v) => {
       const displayY = v.point.origY !== undefined ? v.point.origY : v.point.y;
-      html += `<div class=\"tt-row\"><span class=\"tt-dot\" style=\"background:${v.color}\"></span><span>${escapeHtml(prettySeriesName(v.name))}: ${displayY.toFixed(3)}</span></div>`;
+      const rawSuffix = v.point.rawY !== undefined ? ` (raw ${v.point.rawY.toFixed(3)})` : "";
+      html += `<div class=\"tt-row\"><span class=\"tt-dot\" style=\"background:${v.color}\"></span><span>${escapeHtml(prettySeriesName(v.name))}: ${displayY.toFixed(3)}${rawSuffix}</span></div>`;
     });
     tooltip.innerHTML = html;
     tooltip.style.display = "block";
@@ -571,7 +627,8 @@ function drawChart(canvasId, series, xBounds = null) {
   canvas.setAttribute("height", String(h));
   const p = getChartConfig(canvasId).padding;
   const rawSeries = series || [];
-  const visibleSeries = filterSeriesByChart(canvasId, rawSeries);
+  const displaySeries = applyChartDisplayFilters(canvasId, rawSeries);
+  const visibleSeries = filterSeriesByChart(canvasId, displaySeries);
 
   let minX = 0;
   let maxX = 1;
@@ -627,7 +684,7 @@ function drawChart(canvasId, series, xBounds = null) {
   const sy = y => h - p - ((y - minY) / (maxY - minY)) * (h - p * 2);
 
   const tooltip = document.getElementById(`tt-${canvasId}`);
-  chartModels[canvasId] = { canvas, tooltip, w, h, p, series: drawSeries, rawSeries, minX, maxX, minY, maxY, autoMinY, autoMaxY, sx, sy };
+  chartModels[canvasId] = { canvas, tooltip, w, h, p, series: drawSeries, rawSeries, displaySeries, minX, maxX, minY, maxY, autoMinY, autoMaxY, sx, sy };
   renderPanelSummary(canvasId, rawSeries, visibleSeries);
   if (getChartConfig(canvasId).kind === "redlab") renderTempChannelList(rawSeries);
   else renderSeriesChannelList(canvasId, rawSeries);
@@ -739,6 +796,46 @@ function bindNormalizeControls() {
     if (!wrap) return;
     const cb = wrap.querySelector("input[type=checkbox]");
     if (cb) cb.addEventListener("change", () => applyNormalize(id, cb.checked));
+  });
+}
+
+function loadYawFilterMode(canvasId) {
+  try {
+    yawFilterModes[canvasId] = localStorage.getItem(`graf.yawFilterMode.${canvasId}`) === "1";
+  } catch (_) {
+    yawFilterModes[canvasId] = false;
+  }
+}
+
+function saveYawFilterMode(canvasId) {
+  try {
+    localStorage.setItem(`graf.yawFilterMode.${canvasId}`, yawFilterModes[canvasId] ? "1" : "0");
+  } catch (_) {}
+}
+
+function updateYawFilterButton(canvasId) {
+  const wrap = document.getElementById(`yawFilter-${canvasId}`);
+  if (!wrap) return;
+  const cb = wrap.querySelector("input[type=checkbox]");
+  if (cb) cb.checked = Boolean(yawFilterModes[canvasId]);
+}
+
+function applyYawFilter(canvasId, value) {
+  yawFilterModes[canvasId] = value;
+  saveYawFilterMode(canvasId);
+  const m = chartModels[canvasId];
+  if (m) drawChart(canvasId, m.rawSeries || m.series || [], { minX: m.minX, maxX: m.maxX });
+  setStatus(`ok | ${canvasId} yaw spike filter ${value ? "on" : "off"}`);
+}
+
+function bindYawFilterControls() {
+  chartIds.forEach((id) => {
+    loadYawFilterMode(id);
+    updateYawFilterButton(id);
+    const wrap = document.getElementById(`yawFilter-${id}`);
+    if (!wrap) return;
+    const cb = wrap.querySelector("input[type=checkbox]");
+    if (cb) cb.addEventListener("change", () => applyYawFilter(id, cb.checked));
   });
 }
 

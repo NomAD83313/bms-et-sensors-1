@@ -19,6 +19,7 @@ try:
         TASK_FILE_DELETE_ALL,
         TASK_FILE_DOWNLOAD,
         TASK_FILE_LIST,
+        TASK_FILE_LIST_DONE,
         TASK_IDLE,
         TASK_LIVE_DATA,
         build_ack_command,
@@ -29,12 +30,22 @@ try:
         build_logging_command,
         build_ping_command,
         decode_file_data_packet,
+        decode_live_data_packet,
+        decode_ping_packet,
         make_id_task,
+        radio_bytes_to_words_16,
+        split_id_task,
         words_to_radio_bytes_32,
     )
     from .messkluppe_radio_diag import radio_diag_config_from_env, run_radio_diagnostics
     from .messkluppe_radio_rx import MesskluppeRadioRx
-    from .messkluppe_records import DEFAULT_MEASUREMENT, MesskluppeInfluxRecord, file_packet_to_influx_record
+    from .messkluppe_records import (
+        DEFAULT_MEASUREMENT,
+        MesskluppeInfluxRecord,
+        file_packet_to_influx_record,
+        live_packet_to_influx_record,
+        ping_packet_to_influx_record,
+    )
 except ImportError:
     from messkluppe_mock_node import build_mock_node_sample
     from messkluppe_protocol import (
@@ -44,6 +55,7 @@ except ImportError:
         TASK_FILE_DELETE_ALL,
         TASK_FILE_DOWNLOAD,
         TASK_FILE_LIST,
+        TASK_FILE_LIST_DONE,
         TASK_IDLE,
         TASK_LIVE_DATA,
         build_ack_command,
@@ -54,12 +66,22 @@ except ImportError:
         build_logging_command,
         build_ping_command,
         decode_file_data_packet,
+        decode_live_data_packet,
+        decode_ping_packet,
         make_id_task,
+        radio_bytes_to_words_16,
+        split_id_task,
         words_to_radio_bytes_32,
     )
     from messkluppe_radio_diag import radio_diag_config_from_env, run_radio_diagnostics
     from messkluppe_radio_rx import MesskluppeRadioRx
-    from messkluppe_records import DEFAULT_MEASUREMENT, MesskluppeInfluxRecord, file_packet_to_influx_record
+    from messkluppe_records import (
+        DEFAULT_MEASUREMENT,
+        MesskluppeInfluxRecord,
+        file_packet_to_influx_record,
+        live_packet_to_influx_record,
+        ping_packet_to_influx_record,
+    )
 
 
 MESSKLUPPE_APP_PORT = int(os.getenv("MESSKLUPPE_APP_PORT", "3080"))
@@ -136,6 +158,8 @@ _state: dict[str, Any] = {
     "radio_tx_last_error": "",
     "radio_tx_last_result": None,
     "radio_tx_recent_commands": [],
+    "radio_repeat_action": "",
+    "radio_repeat_payload": None,
     "packets_received": 0,
     "records_written": 0,
     "write_errors": 0,
@@ -581,11 +605,69 @@ def _record_tx_command(
     return item
 
 
-def _repeat_live_ack_payload(radio: MesskluppeRadioRx) -> None:
+def _send_live_ack_payload(radio: MesskluppeRadioRx, *, detail: str, flush_tx: bool) -> None:
     payload = _command_payload_for_action("start_live", {"clip_id": MESSKLUPPE_CLIP_ID})
-    tx_result = radio.write_ack_payload(payload, pipe=1, flush_tx=True, pad_to=int(radio.config.get("payload_size", 32)))
-    _record_tx_command("start_live", payload, accepted=True, detail="ack_payload_auto_repeat_pipe_1", tx_result=tx_result)
+    tx_result = radio.write_ack_payload(payload, pipe=1, flush_tx=flush_tx, pad_to=int(radio.config.get("payload_size", 32)))
+    _record_tx_command("start_live", payload, accepted=True, detail=detail, tx_result=tx_result)
+
+
+def _repeat_live_ack_payload(radio: MesskluppeRadioRx) -> None:
+    _send_live_ack_payload(radio, detail="ack_payload_auto_repeat_pipe_1", flush_tx=True)
     _bump("radio_tx_auto_repeats")
+
+
+def _repeat_pending_ack_payload(radio: MesskluppeRadioRx, action: str, payload: dict[str, Any] | None = None) -> None:
+    command_payload = _command_payload_for_action(action, payload)
+    tx_result = radio.write_ack_payload(command_payload, pipe=1, flush_tx=False, pad_to=int(radio.config.get("payload_size", 32)))
+    _record_tx_command(action, command_payload, accepted=True, detail="ack_payload_after_rx_pipe_1", tx_result=tx_result)
+    _bump("radio_tx_auto_repeats")
+
+
+def _set_radio_repeat(action: str, payload: dict[str, Any] | None = None) -> None:
+    with _state_lock:
+        _state["radio_repeat_action"] = action
+        _state["radio_repeat_payload"] = dict(payload or {})
+
+
+def _clear_radio_repeat(*actions: str) -> None:
+    with _state_lock:
+        current = str(_state.get("radio_repeat_action") or "")
+        if not actions or current in actions:
+            _state["radio_repeat_action"] = ""
+            _state["radio_repeat_payload"] = None
+
+
+def _file_list_entry_from_words(words: tuple[int, ...]) -> dict[str, int | str]:
+    filename_epoch = (int(words[2]) << 16) + int(words[1])
+    return {
+        "name": f"{filename_epoch}.dat",
+        "filename_epoch": filename_epoch,
+        "counter": int(words[3]),
+        "size": (int(words[4]) * 1000) + int(words[5]),
+        "lines": int(words[6]),
+        "file_type": int(words[7]),
+        "dir_index": int(words[8]),
+    }
+
+
+def _handle_radio_packet_state(payload: bytes) -> None:
+    words = radio_bytes_to_words_16(payload)
+    id_task = split_id_task(words[0])
+    if id_task.task == TASK_FILE_LIST:
+        entry = _file_list_entry_from_words(words)
+        with _state_lock:
+            files = list(_state.get("online_files") or [])
+            if entry["filename_epoch"] and all(item.get("filename_epoch") != entry["filename_epoch"] for item in files):
+                files.append(entry)
+            _state["online_files"] = files
+            _state["clip_task"] = TASK_FILE_LIST
+            _state["clip_mode"] = "file_list"
+        _clear_radio_repeat("list_files")
+    elif id_task.task == TASK_FILE_LIST_DONE:
+        with _state_lock:
+            _state["clip_task"] = TASK_IDLE
+            _state["clip_mode"] = "idle"
+        _clear_radio_repeat("list_files")
 
 
 def _state_snapshot() -> dict[str, Any]:
@@ -691,22 +773,67 @@ def _write_record(record: MesskluppeInfluxRecord) -> bool:
         return False
 
 
+def _record_preview_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    priority = (
+        "node_millis",
+        "sensor_ms",
+        "line",
+        "unix_time",
+        "force_x_raw",
+        "force_y_raw",
+        "force_z_raw",
+        "accel_x_raw",
+        "accel_y_raw",
+        "yaw_raw",
+        "yaw_deg",
+        "imu_temperature_raw",
+        "imu_temperature_c",
+        "clip_temperature_raw",
+        "battery_raw",
+    )
+    preview = {key: fields[key] for key in priority if key in fields}
+    for key in sorted(fields):
+        if key not in preview:
+            preview[key] = fields[key]
+        if len(preview) >= 24:
+            break
+    return preview
+
+
 def ingest_payload(payload: bytes, *, file_id: str | int | None = None) -> bool:
     try:
-        packet = decode_file_data_packet(payload)
-        record = file_packet_to_influx_record(
-            packet,
-            measurement=MESSKLUPPE_MEASUREMENT,
-            source=MESSKLUPPE_SOURCE_TAG,
-            file_id=file_id,
-        )
+        id_task = split_id_task(radio_bytes_to_words_16(payload)[0])
+        if id_task.task == TASK_IDLE:
+            packet = decode_ping_packet(payload)
+            record = ping_packet_to_influx_record(
+                packet,
+                measurement=MESSKLUPPE_MEASUREMENT,
+                source=MESSKLUPPE_SOURCE_TAG,
+                file_id=file_id,
+            )
+        elif id_task.task == TASK_LIVE_DATA:
+            packet = decode_live_data_packet(payload)
+            record = live_packet_to_influx_record(
+                packet,
+                measurement=MESSKLUPPE_MEASUREMENT,
+                source=MESSKLUPPE_SOURCE_TAG,
+                file_id=file_id,
+            )
+        else:
+            packet = decode_file_data_packet(payload)
+            record = file_packet_to_influx_record(
+                packet,
+                measurement=MESSKLUPPE_MEASUREMENT,
+                source=MESSKLUPPE_SOURCE_TAG,
+                file_id=file_id,
+            )
         _bump("packets_received")
         _set_state(
             last_packet_at=time.time(),
             last_record={
                 "measurement": record.measurement,
                 "tags": record.tags,
-                "fields": {key: record.fields[key] for key in sorted(record.fields)[:16]},
+                "fields": _record_preview_fields(record.fields),
                 "time_ns": record.time_ns,
             },
         )
@@ -774,6 +901,20 @@ def _radio_collector_loop() -> None:
                     _bump("radio_rx_packets")
                     _remember_radio_payload(payload)
                     _set_state(radio_rx_last_error="")
+                    with _radio_io_lock:
+                        snap = _state_snapshot()
+                        if (
+                            MESSKLUPPE_RADIO_ACK_TX_ENABLED
+                            and MESSKLUPPE_RADIO_LIVE_REPEAT_ENABLED
+                            and snap.get("live_mode")
+                        ):
+                            _send_live_ack_payload(radio, detail="ack_payload_after_rx_pipe_1", flush_tx=False)
+                        elif (
+                            MESSKLUPPE_RADIO_ACK_TX_ENABLED
+                            and snap.get("radio_repeat_action") == "list_files"
+                        ):
+                            _repeat_pending_ack_payload(radio, "list_files", snap.get("radio_repeat_payload"))
+                    _handle_radio_packet_state(payload)
                     ingest_payload(payload, file_id="radio")
                 except Exception as exc:
                     _bump("radio_rx_errors")
@@ -996,6 +1137,8 @@ def api_clip_live_stop():
 @app.route("/api/clip/files", methods=["GET"])
 def api_clip_files():
     result = _accept_command("list_files")
+    if result.get("accepted"):
+        _set_radio_repeat("list_files")
     status = 200
     return jsonify({"ok": result["accepted"], "command": result, "files": _state_snapshot().get("online_files", []), "status": _state_snapshot()}), status
 

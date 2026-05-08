@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from typing import Any
 
 try:
-    from .messkluppe_protocol import FileDataPacket
+    from .messkluppe_protocol import FileDataPacket, LiveDataPacket, PingPacket
 except ImportError:
-    from messkluppe_protocol import FileDataPacket
+    from messkluppe_protocol import FileDataPacket, LiveDataPacket, PingPacket
 
 
 DEFAULT_MEASUREMENT = "messkluppe_sensor"
@@ -24,6 +24,17 @@ RAW_VALUE_NAMES = (
     "reserved_1",
     "reserved_2",
 )
+LIVE_VALUE_NAMES = (
+    "force_x_raw",
+    "force_y_raw",
+    "force_z_raw",
+    "accel_x_raw",
+    "accel_y_raw",
+    "yaw_raw",
+    "imu_temperature_raw",
+    "clip_temperature_raw",
+    "battery_raw",
+)
 
 
 @dataclass(frozen=True)
@@ -37,6 +48,10 @@ class MesskluppeInfluxRecord:
 def _signed16(value: int) -> int:
     item = int(value) & 0xFFFF
     return item - 0x10000 if item & 0x8000 else item
+
+
+def _yaw_deg(value: int) -> float:
+    return round((_signed16(value) / 10.0) % 360.0, 3)
 
 
 def _packet_time_ns(packet: FileDataPacket) -> int | None:
@@ -60,11 +75,37 @@ def file_packet_to_fields(packet: FileDataPacket) -> dict[str, int | float | str
             fields[RAW_VALUE_NAMES[idx]] = _signed16(value)
 
     if len(packet.values) > 6:
-        fields["yaw_deg"] = round(_signed16(packet.values[6]) / 10.0, 3)
+        fields["yaw_deg"] = _yaw_deg(packet.values[6])
     if len(packet.values) > 7:
         fields["imu_temperature_c"] = round(_signed16(packet.values[7]) / 100.0, 3)
 
     return fields
+
+
+def live_packet_to_fields(packet: LiveDataPacket) -> dict[str, int | float | str]:
+    fields: dict[str, int | float | str] = {
+        "node_millis": int(packet.timestamp_ms),
+    }
+    for idx, value in enumerate(packet.values):
+        fields[f"raw_{idx:02d}"] = int(value)
+        if idx < len(LIVE_VALUE_NAMES):
+            fields[LIVE_VALUE_NAMES[idx]] = _signed16(value)
+
+    if len(packet.values) > 5:
+        fields["yaw_deg"] = _yaw_deg(packet.values[5])
+    if len(packet.values) > 6:
+        fields["imu_temperature_c"] = round(_signed16(packet.values[6]) / 100.0, 3)
+    return fields
+
+
+def ping_packet_to_fields(packet: PingPacket) -> dict[str, int | float | str]:
+    return {
+        "node_millis": int(packet.timestamp_ms),
+        "ping_ms": int(packet.ping_ms),
+        "success_percent_x100": int(packet.success_percent_x100),
+        "success_ratio": round(float(packet.success_percent_x100) / 100.0, 3),
+        "file_count": int(packet.file_count),
+    }
 
 
 def file_packet_to_influx_record(
@@ -87,6 +128,52 @@ def file_packet_to_influx_record(
         tags=tags,
         fields=file_packet_to_fields(packet),
         time_ns=_packet_time_ns(packet),
+    )
+
+
+def live_packet_to_influx_record(
+    packet: LiveDataPacket,
+    *,
+    measurement: str = DEFAULT_MEASUREMENT,
+    source: str = "messkluppe",
+    file_id: str | int | None = None,
+) -> MesskluppeInfluxRecord:
+    tags = {
+        "source": source,
+        "clip_id": str(packet.clip_id),
+        "packet_task": str(packet.task),
+    }
+    if file_id is not None:
+        tags["file_id"] = str(file_id)
+
+    return MesskluppeInfluxRecord(
+        measurement=measurement,
+        tags=tags,
+        fields=live_packet_to_fields(packet),
+        time_ns=None,
+    )
+
+
+def ping_packet_to_influx_record(
+    packet: PingPacket,
+    *,
+    measurement: str = DEFAULT_MEASUREMENT,
+    source: str = "messkluppe",
+    file_id: str | int | None = None,
+) -> MesskluppeInfluxRecord:
+    tags = {
+        "source": source,
+        "clip_id": str(packet.clip_id),
+        "packet_task": str(packet.task),
+    }
+    if file_id is not None:
+        tags["file_id"] = str(file_id)
+
+    return MesskluppeInfluxRecord(
+        measurement=measurement,
+        tags=tags,
+        fields=ping_packet_to_fields(packet),
+        time_ns=None,
     )
 
 

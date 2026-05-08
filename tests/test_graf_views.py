@@ -20,13 +20,14 @@ class GrafViewsTests(unittest.TestCase):
         cfg = VIEW_CONFIGS["all"]
 
         self.assertTrue(cfg["show_messkluppe"])
+        self.assertTrue(cfg["show_messkluppe_orientation"])
 
-    def test_messkluppe_view_uses_force_window(self):
+    def test_messkluppe_view_uses_force_and_orientation_windows(self):
         cfg = VIEW_CONFIGS["messkluppe"]
 
         self.assertEqual(cfg["title"], "Graf App Lite · Messkluppe")
-        self.assertEqual(cfg["device"]["panel_title"], "Messkluppe Force")
-        self.assertEqual(cfg["device"]["chart_id"], "c6")
+        self.assertTrue(cfg["show_messkluppe"])
+        self.assertTrue(cfg["show_messkluppe_orientation"])
 
 
 if __name__ == "__main__":

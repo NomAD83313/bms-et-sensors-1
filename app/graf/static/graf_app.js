@@ -60,6 +60,7 @@
           c4: toXY(data.panels.almemo_live || []),
           c5: toXY(data.panels.pyrometers_temperature || []),
           c6: toXY(data.panels.messkluppe_force || []),
+          c7: toXY(data.panels.messkluppe_orientation || []),
         };
         const panelMeta = data.panel_meta || {};
         panelMetaByChart.c1 = panelMeta.redlab_temperature || {};
@@ -68,6 +69,7 @@
         panelMetaByChart.c4 = panelMeta.almemo_live || {};
         panelMetaByChart.c5 = panelMeta.pyrometers_temperature || {};
         panelMetaByChart.c6 = panelMeta.messkluppe_force || {};
+        panelMetaByChart.c7 = panelMeta.messkluppe_orientation || {};
         const xMin = new Date(data.window_from_utc || "").getTime();
         const xMax = new Date(data.window_to_utc || "").getTime();
         const xBounds = Number.isFinite(xMin) && Number.isFinite(xMax) && xMax > xMin
@@ -263,6 +265,7 @@
     });
     bindYAxisControls();
     bindNormalizeControls();
+    bindYawFilterControls();
     bindHeightControls();
     loadSavedChartHeights();
     initRefreshSlider();

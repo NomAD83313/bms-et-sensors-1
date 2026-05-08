@@ -84,7 +84,7 @@ Legacy-compatible control API skeleton:
 - `POST /api/clip/files/delete`.
 - `POST /api/clip/files/delete-all`.
 
-In mock mode these endpoints update collector state and return success. In radio mode they currently return `501` until the nRF24 transport is implemented.
+In mock mode these endpoints update collector state and return success. In radio mode they build legacy command payloads and queue them as nRF24 ACK payloads on pipe `1`.
 
 When the dashboard is running, nginx exposes the UI at `/messkluppe/` and the health probe at `/probe/messkluppe`.
 
@@ -137,6 +137,41 @@ Radio TX telemetry:
 The TX layer builds and records legacy command payloads. In radio mode it queues those commands as nRF24 ACK payloads on pipe `1`, matching the legacy host `writeAckPayload(1, ...)` pattern. The node receives the command on one of its regular writes if its firmware checks ACK payloads.
 While `live_mode` is active, the RX loop repeats the `1060` live command at `MESSKLUPPE_RADIO_COMMAND_REPEAT_SEC` cadence to match the legacy host behavior.
 
+## v8.0.1 Radio Bring-up Results
+
+Status as of the v8.0.1 checkpoint:
+
+- Host wiring is validated with the nRF24 module on Raspberry Pi SPI0 and CE on BCM GPIO `25` / physical pin `22`.
+- Local runtime uses `MESSKLUPPE_INPUT_MODE=radio` and `MESSKLUPPE_FAKE_MODE=0` in `.env`; `.env` remains local runtime state and is not committed.
+- The host receives real radio packets from the available test node and writes them to InfluxDB.
+- Live mode works through the legacy ACK payload flow. `POST /messkluppe/api/clip/live/start` queues task `60` and the RX loop repeats the command while live mode is active.
+- The test node can stream force fields, accelerometer fields, IMU temperature, and yaw/orientation fields without an SD card installed.
+- `start_logging` / SD-file workflows were not validated with this test node because it is not the target production node and lacks the expected sensor/interrupt setup.
+
+Observed live record shape:
+
+- `packet_task=60`
+- `file_id=radio`
+- force: `force_x_raw`, `force_y_raw`, `force_z_raw`
+- acceleration: `accel_x_raw`, `accel_y_raw`
+- orientation: `yaw_raw`, `yaw_deg`
+- diagnostics: `node_millis`, `imu_temperature_raw`, `imu_temperature_c`, `clip_temperature_raw`, `battery_raw`
+
+Orientation handling:
+
+- Node firmware sends yaw as a raw value scaled by `10`.
+- The host keeps `yaw_raw` unchanged for diagnostics.
+- The host stores `yaw_deg` normalized into one turn (`0 <= yaw_deg < 360`) so firmware wrap/offset artifacts such as raw `4076` become `47.6` degrees.
+- During rotation tests, occasional one-sample yaw drops were observed while packet framing, packet size, task id, force, and acceleration fields stayed valid. This points more toward IMU/DMP/node-side yaw samples than toward radio payload corruption.
+- Graf App Lite keeps the raw `yaw_deg` series available and adds a client-side `Filter spikes` checkbox on the `Messkluppe Orientation` panel. The checkbox only changes visualization; it does not rewrite InfluxDB data.
+
+Next validation with the real node:
+
+- Re-test live mode after reboot and verify that `packet_task=60` records continue in InfluxDB.
+- Validate target-node sensor layout, interrupt behavior, and SD/file commands separately.
+- Compare raw and filtered orientation during controlled rotations.
+- Decide whether a persisted `yaw_deg_filtered` field is useful, or whether filtering should remain UI-only.
+
 ## Visualization
 
 The collector writes decoded force packets to InfluxDB measurement `messkluppe_sensor`.
@@ -151,8 +186,9 @@ Influx schema:
 
 Graf App Lite exposes the data in two places:
 
-- `/graf/`: the All view includes the Messkluppe Force panel.
-- `/graf/messkluppe`: a dedicated Messkluppe window for `force_x_raw`, `force_y_raw`, and `force_z_raw`.
+- `/graf/`: the All view includes Messkluppe Force and Orientation panels.
+- `/graf/messkluppe`: a dedicated Messkluppe window for force fields and `yaw_deg` orientation.
+- The `Messkluppe Orientation` panel has a `Filter spikes` checkbox for client-side one-sample yaw spike suppression.
 
 The dedicated view also provides CSV export through `/graf/api/export/messkluppe.csv`.
 

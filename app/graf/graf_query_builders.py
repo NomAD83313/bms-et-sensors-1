@@ -107,14 +107,24 @@ def pyrometers_flux(*, bucket: str, measurement: str, start_expr: str, stop_expr
     return query
 
 
-def messkluppe_flux(*, bucket: str, measurement: str, start_expr: str, stop_expr: str | None, window: str) -> str:
+def messkluppe_flux(
+    *,
+    bucket: str,
+    measurement: str,
+    start_expr: str,
+    stop_expr: str | None,
+    window: str,
+    fields: list[str] | tuple[str, ...] | None = None,
+) -> str:
     bucket_q = json.dumps(bucket)
     measurement_q = json.dumps(measurement)
+    selected_fields = list(fields or ("force_x_raw", "force_y_raw", "force_z_raw"))
+    field_filter = " or ".join(f"r._field == {json.dumps(field)}" for field in selected_fields)
     query = (
         f"from(bucket: {bucket_q})\n"
         + range_line(start_expr, stop_expr)
         + f"  |> filter(fn: (r) => r._measurement == {measurement_q})\n"
-        + '  |> filter(fn: (r) => r._field == "force_x_raw" or r._field == "force_y_raw" or r._field == "force_z_raw")\n'
+        + f"  |> filter(fn: (r) => {field_filter})\n"
     )
     if window and window != "__raw__":
         query += f"  |> aggregateWindow(every: {window}, fn: mean, createEmpty: false)\n"

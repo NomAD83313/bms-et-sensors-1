@@ -50,6 +50,20 @@ class GrafRedLabTagTests(unittest.TestCase):
         self.assertIn('r._field == "force_z_raw"', query)
         self.assertIn('"clip_id", "file_id"', query)
 
+    def test_messkluppe_flux_can_select_orientation_fields(self):
+        query = messkluppe_flux(
+            bucket="sensors",
+            measurement="messkluppe_sensor",
+            start_expr="-5m",
+            stop_expr=None,
+            window="1s",
+            fields=("yaw_deg",),
+        )
+
+        self.assertIn('r._field == "yaw_deg"', query)
+        self.assertNotIn('r._field == "force_x_raw"', query)
+        self.assertNotIn('r._field == "accel_x_raw"', query)
+
     def test_messkluppe_csv_column_name_uses_clip_file_and_field(self):
         name = "source=messkluppe | clip_id=1 | file_id=fake | _field=force_x_raw"
         self.assertEqual(messkluppe_csv_column_name(name), "messkluppe_clip_1_file_fake_force_x_raw")

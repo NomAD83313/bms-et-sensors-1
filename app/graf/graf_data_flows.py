@@ -12,6 +12,7 @@ def load_dashboard_panels(
     load_almemo_series_fn,
     load_pyrometers_series_fn,
     load_messkluppe_series_fn,
+    load_messkluppe_orientation_series_fn,
     load_matter_series_fn,
     panel_raw_cadence_ms_fn,
 ):
@@ -22,6 +23,7 @@ def load_dashboard_panels(
         "almemo_live": [],
         "pyrometers_temperature": [],
         "messkluppe_force": [],
+        "messkluppe_orientation": [],
         "matter_temperature": [],
     }
     panel_meta: dict[str, dict[str, Any]] = {
@@ -43,6 +45,8 @@ def load_dashboard_panels(
     if view_mode in {"all", "messkluppe"}:
         panels["messkluppe_force"] = load_messkluppe_series_fn(start_expr, stop_expr, window, raw_mode)
         panel_meta["messkluppe_force"]["raw_cadence_ms"] = panel_raw_cadence_ms_fn("messkluppe_force", start_expr, stop_expr)
+        panels["messkluppe_orientation"] = load_messkluppe_orientation_series_fn(start_expr, stop_expr, window, raw_mode)
+        panel_meta["messkluppe_orientation"]["raw_cadence_ms"] = panel_raw_cadence_ms_fn("messkluppe_orientation", start_expr, stop_expr)
     if view_mode in {"all", "matter"}:
         panels["matter_temperature"] = load_matter_series_fn(start_expr, stop_expr, window, raw_mode)
         panel_meta["matter_temperature"]["raw_cadence_ms"] = panel_raw_cadence_ms_fn("matter_temperature", start_expr, stop_expr)

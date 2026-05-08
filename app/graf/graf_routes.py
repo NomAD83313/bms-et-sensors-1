@@ -91,6 +91,7 @@ def register_routes(app, ctx: dict):
             load_almemo_series_fn=ctx["load_almemo_series_fn"],
             load_pyrometers_series_fn=ctx["load_pyrometers_series_fn"],
             load_messkluppe_series_fn=ctx["load_messkluppe_series_fn"],
+            load_messkluppe_orientation_series_fn=ctx["load_messkluppe_orientation_series_fn"],
             load_matter_series_fn=ctx["load_matter_series_fn"],
             panel_raw_cadence_ms_fn=ctx["panel_raw_cadence_ms_fn"],
         )

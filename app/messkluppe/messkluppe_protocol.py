@@ -54,6 +54,15 @@ class FileDataPacket:
     raw_words: tuple[int, ...]
 
 
+@dataclass(frozen=True)
+class LiveDataPacket:
+    clip_id: int
+    task: int
+    timestamp_ms: int
+    values: tuple[int, ...]
+    raw_words: tuple[int, ...]
+
+
 def _require_uint(value: int, bits: int, name: str) -> int:
     item = int(value)
     limit = 1 << bits
@@ -126,6 +135,18 @@ def decode_file_data_packet(payload: bytes | bytearray | Sequence[int]) -> FileD
         unix_time=words[1],
         line_number=words[2],
         values=tuple(words[3:]),
+        raw_words=words,
+    )
+
+
+def decode_live_data_packet(payload: bytes | bytearray | Sequence[int]) -> LiveDataPacket:
+    words = radio_bytes_to_words_16(payload)
+    id_task = split_id_task(words[0])
+    return LiveDataPacket(
+        clip_id=id_task.clip_id,
+        task=id_task.task,
+        timestamp_ms=(words[1] << 16) + words[2],
+        values=tuple(words[5:14]),
         raw_words=words,
     )
 

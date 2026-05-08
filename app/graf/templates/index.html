@@ -436,6 +436,9 @@
     {% if show_messkluppe %}
     {{ render_panel("c6", "Messkluppe Force", "series", "seriesChannelList-c6", "seriesChannelToggleAll-c6") }}
     {% endif %}
+    {% if show_messkluppe_orientation %}
+    {{ render_panel("c7", "Messkluppe Orientation", "series", "seriesChannelList-c7", "seriesChannelToggleAll-c7", filter_toggle_id="yawFilter-c7", filter_toggle_label="Filter spikes") }}
+    {% endif %}
     {% if show_mscl %}
     {{ render_panel("c2", "MSCL Temperature", "series", "seriesChannelList-c2", "seriesChannelToggleAll-c2") }}
     {% endif %}
@@ -471,6 +474,7 @@
       c4: { kind: "series", labelKind: "almemo", padding: 30, dataKey: "almemo_live" },
       c5: { kind: "series", labelKind: "pyrometers", padding: 30, dataKey: "pyrometers_temperature" },
       c6: { kind: "series", labelKind: "messkluppe", padding: 30, dataKey: "messkluppe_force" },
+      c7: { kind: "series", labelKind: "messkluppe", padding: 30, dataKey: "messkluppe_orientation" },
     };
     const seriesChartIds = chartIds.filter((chartId) => (chartConfigs[chartId] || {}).kind === "series");
     const chartModels = {};
@@ -488,6 +492,7 @@
     let tempChannelSelection = {};
     const seriesSelection = {};
     const normalizeModes = {};
+    const yawFilterModes = {};
   </script>
   <script src="./static/graf_zoom_state.js"></script>
   <script src="./static/graf_ui_state.js"></script>
