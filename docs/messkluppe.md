@@ -88,6 +88,17 @@ Relevant environment variables:
 - `MESSKLUPPE_FAKE_INTERVAL_SEC` default `5.0`.
 - `MESSKLUPPE_INFLUX_MEASUREMENT` default `messkluppe_sensor`.
 - `MESSKLUPPE_SOURCE_TAG` default `messkluppe`.
+- `MESSKLUPPE_RADIO_SPI_BUS` default `0`.
+- `MESSKLUPPE_RADIO_SPI_DEVICE` default `0`.
+- `MESSKLUPPE_RADIO_CE_GPIO` default `25` for host wiring where nRF24 CE is connected to Raspberry Pi physical pin 22. Legacy host code used BCM GPIO `22` / physical pin 15.
+- `MESSKLUPPE_RADIO_CHANNEL` default `111`.
+- `MESSKLUPPE_RADIO_PAYLOAD_SIZE` default `32`.
+- `MESSKLUPPE_RADIO_SPI_SPEED_HZ` default `4000000`.
+
+Radio diagnostics:
+
+- `POST /api/radio/diagnose`: checks SPI open, CE GPIO setup, and nRF24 register access.
+- The collector UI exposes the same check in the `Radio Diagnostics` card.
 
 ## Visualization
 

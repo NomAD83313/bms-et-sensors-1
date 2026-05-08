@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from app.messkluppe import messkluppe_app
 
@@ -68,6 +69,28 @@ class MesskluppeAppControlTests(unittest.TestCase):
         self.assertIn("startLoggingBtn", html)
         self.assertIn("api/clip/start-logging", html)
         self.assertIn("api/clip/files/delete-all", html)
+        self.assertIn("Radio Diagnostics", html)
+        self.assertIn("api/radio/diagnose", html)
+
+    def test_radio_diagnostics_endpoint_updates_state(self):
+        diag = {
+            "ok": True,
+            "configured": {"spi_bus": 0, "spi_device": 0, "ce_gpio": 25},
+            "checks": {"spi_open": {"ok": True}},
+            "registers": {"rf_ch": 111},
+            "details": {"connected_hint": True},
+            "duration_ms": 1.0,
+            "error": "",
+        }
+
+        with patch.object(messkluppe_app, "run_radio_diagnostics", return_value=diag):
+            response = self.client.post("/api/radio/diagnose")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["radio"], diag)
+        self.assertEqual(payload["status"]["radio_last_diag"], diag)
 
 
 if __name__ == "__main__":

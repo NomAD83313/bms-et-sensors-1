@@ -12,9 +12,11 @@ from influxdb_client.client.write_api import SYNCHRONOUS  # type: ignore
 
 try:
     from .messkluppe_protocol import TASK_FILE_DOWNLOAD, decode_file_data_packet, make_id_task, words16_to_legacy_payload
+    from .messkluppe_radio_diag import radio_diag_config_from_env, run_radio_diagnostics
     from .messkluppe_records import DEFAULT_MEASUREMENT, MesskluppeInfluxRecord, file_packet_to_influx_record
 except ImportError:
     from messkluppe_protocol import TASK_FILE_DOWNLOAD, decode_file_data_packet, make_id_task, words16_to_legacy_payload
+    from messkluppe_radio_diag import radio_diag_config_from_env, run_radio_diagnostics
     from messkluppe_records import DEFAULT_MEASUREMENT, MesskluppeInfluxRecord, file_packet_to_influx_record
 
 
@@ -77,6 +79,8 @@ _state: dict[str, Any] = {
     "last_command": None,
     "command_errors": 0,
     "online_files": [],
+    "radio_config": radio_diag_config_from_env(),
+    "radio_last_diag": None,
 }
 
 INDEX_HTML = """<!doctype html>
@@ -194,6 +198,19 @@ __COMMON_CSS__
           <button type="button" id="deleteAllFilesBtn" class="graf-link-button">Delete all online files</button>
         </div>
       </div>
+      <div class="card panel">
+        <div class="panel-head"><h2>Radio Diagnostics</h2><span class="status-pill status-warn" id="radioPill">not checked</span></div>
+        <div class="control-surface">
+          <div class="form-grid">
+            <label>SPI device<input id="radioSpiInput" type="text" value="/dev/spidev0.0" readonly></label>
+            <label>CE GPIO<input id="radioCeInput" type="number" min="0" step="1" value="25" readonly></label>
+          </div>
+          <div class="button-row">
+            <button type="button" id="radioDiagBtn" class="graf-link-button">Check radio</button>
+          </div>
+          <pre id="radioDiagOutput" style="min-height:120px">-</pre>
+        </div>
+      </div>
     </section>
     <section class="card panel">
       <div class="panel-head"><h2>Collector State</h2><span id="updated">-</span></div>
@@ -212,6 +229,8 @@ __COMMON_CSS__
     const recordTime = document.getElementById('recordTime');
     const updated = document.getElementById('updated');
     const onlineFilesBody = document.getElementById('onlineFilesBody');
+    const radioPill = document.getElementById('radioPill');
+    const radioDiagOutput = document.getElementById('radioDiagOutput');
 
     function row(label, value) {
       const div = document.createElement('div');
@@ -240,6 +259,15 @@ __COMMON_CSS__
       document.getElementById('loggingPill').textContent = data.logging ? 'logging' : 'idle';
       document.getElementById('livePill').className = `status-pill ${data.live_mode ? 'status-ok' : 'status-warn'}`;
       document.getElementById('livePill').textContent = data.live_mode ? 'running' : 'stopped';
+      const radioConfig = data.radio_config || {};
+      document.getElementById('radioSpiInput').value = `/dev/spidev${radioConfig.spi_bus ?? 0}.${radioConfig.spi_device ?? 0}`;
+      document.getElementById('radioCeInput').value = radioConfig.ce_gpio ?? 25;
+      const radioDiag = data.radio_last_diag || null;
+      if (radioDiag) {
+        radioPill.className = `status-pill ${radioDiag.ok ? 'status-ok' : 'status-err'}`;
+        radioPill.textContent = radioDiag.ok ? 'ok' : 'error';
+        radioDiagOutput.textContent = JSON.stringify(radioDiag, null, 2);
+      }
       stateRows.innerHTML = '';
       [
         ['Collector running', data.collector_running ? 'yes' : 'no'],
@@ -250,6 +278,8 @@ __COMMON_CSS__
         ['Write errors', data.write_errors ?? 0],
         ['Last error', data.last_error || '-'],
         ['Last command', data.last_command ? `${data.last_command.action}: ${data.last_command.detail}` : '-'],
+        ['Radio CE GPIO', radioConfig.ce_gpio ?? '-'],
+        ['Radio last check', radioDiag ? (radioDiag.ok ? 'ok' : (radioDiag.error || 'error')) : '-'],
         ['Command errors', data.command_errors ?? 0],
         ['Uptime', `${data.uptime_sec ?? 0}s`],
       ].forEach(([k, v]) => stateRows.appendChild(row(k, v)));
@@ -318,6 +348,13 @@ __COMMON_CSS__
       await postJson('api/clip/files/delete-all');
       onlineFilesBody.innerHTML = '<tr><td colspan="4" class="empty-note">No online files available in fake mode.</td></tr>';
       await refresh();
+    });
+    document.getElementById('radioDiagBtn').addEventListener('click', async () => {
+      radioPill.className = 'status-pill status-warn';
+      radioPill.textContent = 'checking';
+      radioDiagOutput.textContent = 'checking...';
+      const data = await postJson('api/radio/diagnose');
+      render(data);
     });
     refresh();
     setInterval(refresh, 5000);
@@ -527,6 +564,13 @@ def health():
 @app.route("/api/status")
 def api_status():
     return jsonify(_state_snapshot())
+
+
+@app.route("/api/radio/diagnose", methods=["POST"])
+def api_radio_diagnose():
+    diag = run_radio_diagnostics()
+    _set_state(radio_config=radio_diag_config_from_env(), radio_last_diag=diag)
+    return jsonify({"ok": bool(diag.get("ok")), "radio": diag, "status": _state_snapshot()}), 200 if diag.get("ok") else 503
 
 
 @app.route("/api/ingest-hex", methods=["POST"])
