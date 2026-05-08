@@ -14,11 +14,13 @@ try:
     from .messkluppe_mock_node import build_mock_node_sample
     from .messkluppe_protocol import decode_file_data_packet
     from .messkluppe_radio_diag import radio_diag_config_from_env, run_radio_diagnostics
+    from .messkluppe_radio_rx import MesskluppeRadioRx
     from .messkluppe_records import DEFAULT_MEASUREMENT, MesskluppeInfluxRecord, file_packet_to_influx_record
 except ImportError:
     from messkluppe_mock_node import build_mock_node_sample
     from messkluppe_protocol import decode_file_data_packet
     from messkluppe_radio_diag import radio_diag_config_from_env, run_radio_diagnostics
+    from messkluppe_radio_rx import MesskluppeRadioRx
     from messkluppe_records import DEFAULT_MEASUREMENT, MesskluppeInfluxRecord, file_packet_to_influx_record
 
 
@@ -28,6 +30,7 @@ MESSKLUPPE_INPUT_MODE = os.getenv("MESSKLUPPE_INPUT_MODE", "mock" if MESSKLUPPE_
 if MESSKLUPPE_INPUT_MODE not in {"mock", "radio", "disabled"}:
     MESSKLUPPE_INPUT_MODE = "mock" if MESSKLUPPE_FAKE_MODE else "disabled"
 MESSKLUPPE_FAKE_INTERVAL_SEC = float(os.getenv("MESSKLUPPE_FAKE_INTERVAL_SEC", "5.0"))
+MESSKLUPPE_RADIO_POLL_SEC = float(os.getenv("MESSKLUPPE_RADIO_POLL_SEC", "0.05"))
 MESSKLUPPE_MEASUREMENT = os.getenv("MESSKLUPPE_INFLUX_MEASUREMENT", DEFAULT_MEASUREMENT).strip() or DEFAULT_MEASUREMENT
 MESSKLUPPE_SOURCE_TAG = os.getenv("MESSKLUPPE_SOURCE_TAG", "messkluppe").strip() or "messkluppe"
 INFLUX_URL = os.getenv("INFLUX_URL", "http://influxdb:8086").strip()
@@ -67,6 +70,13 @@ _state: dict[str, Any] = {
     "fake_mode": MESSKLUPPE_FAKE_MODE,
     "input_mode": MESSKLUPPE_INPUT_MODE,
     "radio_rx_ready": False,
+    "radio_listening": False,
+    "radio_rx_packets": 0,
+    "radio_rx_empty_reads": 0,
+    "radio_rx_errors": 0,
+    "radio_rx_last_at": None,
+    "radio_rx_last_error": "",
+    "radio_runtime": None,
     "packets_received": 0,
     "records_written": 0,
     "write_errors": 0,
@@ -280,6 +290,11 @@ __COMMON_CSS__
         ['Collector running', data.collector_running ? 'yes' : 'no'],
         ['Input mode', data.input_mode || '-'],
         ['Radio RX ready', data.radio_rx_ready ? 'yes' : 'no'],
+        ['Radio listening', data.radio_listening ? 'yes' : 'no'],
+        ['Radio RX packets', data.radio_rx_packets ?? 0],
+        ['Radio empty reads', data.radio_rx_empty_reads ?? 0],
+        ['Radio last RX', fmtTime(data.radio_rx_last_at)],
+        ['Radio error', data.radio_rx_last_error || '-'],
         ['Influx configured', data.influx_configured ? 'yes' : 'no'],
         ['Last packet', fmtTime(data.last_packet_at)],
         ['Last write', fmtTime(data.last_write_at)],
@@ -520,16 +535,54 @@ def _mock_collector_loop() -> None:
     _log("mock node collector loop stopped")
 
 
+def _radio_collector_loop() -> None:
+    poll_sec = max(0.005, MESSKLUPPE_RADIO_POLL_SEC)
+    _set_state(collector_running=True, radio_listening=False, radio_rx_ready=False, radio_rx_last_error="")
+    _log("radio collector loop starting")
+    try:
+        with MesskluppeRadioRx() as radio:
+            _set_state(
+                radio_config=radio.config,
+                radio_runtime=radio.snapshot(),
+                radio_listening=True,
+                radio_rx_ready=True,
+                last_error="",
+            )
+            _log("radio collector loop listening")
+            while not _stop_event.is_set():
+                try:
+                    payload = radio.read_payload()
+                    if payload is None:
+                        _bump("radio_rx_empty_reads")
+                        _stop_event.wait(poll_sec)
+                        continue
+                    _bump("radio_rx_packets")
+                    _set_state(radio_rx_last_at=time.time(), radio_rx_last_error="")
+                    ingest_payload(payload, file_id="radio")
+                except Exception as exc:
+                    _bump("radio_rx_errors")
+                    _set_state(radio_rx_last_error=str(exc), last_error=f"radio_rx_error: {exc}")
+                    _stop_event.wait(max(0.2, poll_sec))
+    except Exception as exc:
+        _bump("radio_rx_errors")
+        _set_state(radio_rx_last_error=str(exc), last_error=f"radio_start_error: {exc}")
+        _log(f"radio collector loop failed: {exc}")
+    finally:
+        _set_state(collector_running=False, radio_listening=False, radio_rx_ready=False)
+        _log("radio collector loop stopped")
+
+
 def _start_collector() -> None:
     global _collector_thread
     if _collector_thread is not None and _collector_thread.is_alive():
         return
-    if MESSKLUPPE_INPUT_MODE != "mock":
-        _set_state(last_error=f"{MESSKLUPPE_INPUT_MODE}_input_mode_not_implemented")
-        _log(f"{MESSKLUPPE_INPUT_MODE} input mode is not implemented yet")
+    if MESSKLUPPE_INPUT_MODE == "disabled":
+        _set_state(last_error="input_mode_disabled")
+        _log("collector input mode is disabled")
         return
     _stop_event.clear()
-    _collector_thread = threading.Thread(target=_mock_collector_loop, daemon=True)
+    target = _radio_collector_loop if MESSKLUPPE_INPUT_MODE == "radio" else _mock_collector_loop
+    _collector_thread = threading.Thread(target=target, daemon=True)
     _collector_thread.start()
 
 
@@ -556,6 +609,34 @@ def api_status():
 
 @app.route("/api/radio/diagnose", methods=["POST"])
 def api_radio_diagnose():
+    snap = _state_snapshot()
+    if snap.get("radio_listening"):
+        runtime = snap.get("radio_runtime") or {}
+        diag = {
+            "ok": bool(snap.get("radio_rx_ready")),
+            "configured": snap.get("radio_config", radio_diag_config_from_env()),
+            "checks": {
+                "radio_rx_loop": {
+                    "ok": bool(snap.get("radio_rx_ready")),
+                    "message": "radio_rx_loop_active",
+                }
+            },
+            "registers": {
+                "status": runtime.get("status"),
+                "fifo_status": runtime.get("fifo_status"),
+            },
+            "details": {
+                "radio_listening": True,
+                "rx_packets": snap.get("radio_rx_packets", 0),
+                "rx_empty_reads": snap.get("radio_rx_empty_reads", 0),
+                "last_rx_at": snap.get("radio_rx_last_at"),
+            },
+            "duration_ms": 0.0,
+            "error": snap.get("radio_rx_last_error") or "",
+        }
+        _set_state(radio_last_diag=diag)
+        return jsonify({"ok": bool(diag["ok"]), "radio": diag, "status": _state_snapshot()}), 200 if diag["ok"] else 503
+
     diag = run_radio_diagnostics()
     _set_state(radio_config=radio_diag_config_from_env(), radio_last_diag=diag)
     return jsonify({"ok": bool(diag.get("ok")), "radio": diag, "status": _state_snapshot()}), 200 if diag.get("ok") else 503

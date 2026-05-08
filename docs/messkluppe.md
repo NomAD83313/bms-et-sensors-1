@@ -45,7 +45,7 @@ The first runnable version is intentionally host-side only:
 
 - It starts as a Compose profile service, so the default stack is unchanged.
 - `MESSKLUPPE_INPUT_MODE=mock` generates synthetic node packets in the same 32-byte legacy binary format and writes decoded records to InfluxDB. This validates the full storage and visualization path before node hardware is ready.
-- `MESSKLUPPE_INPUT_MODE=radio` is reserved for the future nRF24 RX loop. Current radio support covers SPI/CE/register diagnostics only.
+- `MESSKLUPPE_INPUT_MODE=radio` starts the nRF24 RX loop. It configures the radio as PRX, keeps CE high, polls RX FIFO, and forwards any 32-byte payload to the same decoder/Influx path. Without a node it should remain healthy and count empty reads.
 - `MESSKLUPPE_FAKE_MODE=1` is still accepted as a compatibility switch and maps to mock input when `MESSKLUPPE_INPUT_MODE` is not set.
 
 Run:
@@ -64,6 +64,7 @@ HTTP endpoints:
 - `POST /api/mock-node/stop`: stop the mock node packet loop.
 - `POST /api/fake-once`, `POST /api/fake/start`, and `POST /api/fake/stop`: compatibility aliases for the mock node endpoints.
 - `POST /api/ingest-hex`: ingest one 32-byte legacy payload as hex, useful for replay tests.
+- In radio mode, startup begins the RX loop automatically. `GET /api/status` exposes `radio_listening`, `radio_rx_ready`, `radio_rx_packets`, `radio_rx_empty_reads`, `radio_rx_last_at`, and `radio_rx_last_error`.
 
 Legacy-compatible control API skeleton:
 
@@ -89,6 +90,7 @@ Relevant environment variables:
 - `MESSKLUPPE_INPUT_MODE` default `mock`; allowed values are `mock`, `radio`, and `disabled`.
 - `MESSKLUPPE_FAKE_MODE` default `1`.
 - `MESSKLUPPE_FAKE_INTERVAL_SEC` default `5.0`.
+- `MESSKLUPPE_RADIO_POLL_SEC` default `0.05`.
 - `MESSKLUPPE_INFLUX_MEASUREMENT` default `messkluppe_sensor`.
 - `MESSKLUPPE_SOURCE_TAG` default `messkluppe`.
 - `MESSKLUPPE_RADIO_SPI_BUS` default `0`.
@@ -102,6 +104,15 @@ Radio diagnostics:
 
 - `POST /api/radio/diagnose`: checks SPI open, CE GPIO setup, and nRF24 register access.
 - The collector UI exposes the same check in the `Radio Diagnostics` card.
+
+Radio RX telemetry:
+
+- `radio_listening`: the RX loop has configured nRF24 and is polling.
+- `radio_rx_ready`: radio object is open and CE is asserted for PRX.
+- `radio_rx_packets`: payloads read from nRF24 RX FIFO.
+- `radio_rx_empty_reads`: polls where RX FIFO was empty.
+- `radio_rx_last_at`: last payload timestamp.
+- `radio_rx_last_error`: last runtime RX error, if any.
 
 ## Visualization
 
@@ -129,10 +140,11 @@ Initial code should stay hardware-independent:
 - `app/messkluppe/messkluppe_protocol.py`: byte order, task ids, packet parsing, command encoding.
 - `app/messkluppe/messkluppe_mock_node.py`: deterministic mock node payload generation for host-only pipeline testing.
 - `app/messkluppe/messkluppe_records.py`: decoded packet to Influx-ready records and line protocol.
-- `app/messkluppe/messkluppe_app.py`: minimal Flask collector app with mock ingest, radio diagnostics, and Influx writing.
+- `app/messkluppe/messkluppe_app.py`: minimal Flask collector app with mock ingest, radio diagnostics/RX telemetry, and Influx writing.
+- `app/messkluppe/messkluppe_radio_rx.py`: nRF24 PRX setup and fixed payload reads.
 - Unit tests under `tests/` using synthetic payloads.
 
-Hardware-facing nRF24/RPi GPIO RX code should be added as a separate layer after the protocol tests are stable. The host-side diagnostic layer already verifies SPI, CE GPIO, and nRF24 register access.
+Hardware-facing nRF24/RPi GPIO RX code is isolated in `messkluppe_radio_rx.py`. The current loop can listen before the node is ready; command TX and higher-level request/response behavior still need real-node validation.
 
 ## Legacy Host Transfer
 

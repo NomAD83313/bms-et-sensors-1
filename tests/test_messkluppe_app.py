@@ -73,6 +73,7 @@ class MesskluppeAppControlTests(unittest.TestCase):
         self.assertIn("api/clip/files/delete-all", html)
         self.assertIn("Radio Diagnostics", html)
         self.assertIn("api/radio/diagnose", html)
+        self.assertIn("Radio listening", html)
 
     def test_radio_diagnostics_endpoint_updates_state(self):
         diag = {
@@ -94,6 +95,33 @@ class MesskluppeAppControlTests(unittest.TestCase):
         self.assertEqual(payload["radio"], diag)
         self.assertEqual(payload["status"]["radio_last_diag"], diag)
 
+    def test_radio_diagnostics_uses_runtime_state_while_rx_loop_is_active(self):
+        with messkluppe_app._state_lock:
+            old_values = {
+                key: messkluppe_app._state.get(key)
+                for key in ("radio_listening", "radio_rx_ready", "radio_runtime", "radio_rx_packets", "radio_rx_empty_reads")
+            }
+            messkluppe_app._state.update(
+                radio_listening=True,
+                radio_rx_ready=True,
+                radio_runtime={"status": 14, "fifo_status": 17},
+                radio_rx_packets=0,
+                radio_rx_empty_reads=3,
+            )
+        try:
+            with patch.object(messkluppe_app, "run_radio_diagnostics") as diag_mock:
+                response = self.client.post("/api/radio/diagnose")
+        finally:
+            with messkluppe_app._state_lock:
+                messkluppe_app._state.update(old_values)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["radio"]["checks"]["radio_rx_loop"]["message"], "radio_rx_loop_active")
+        self.assertEqual(payload["radio"]["registers"]["fifo_status"], 17)
+        diag_mock.assert_not_called()
+
     @patch.object(messkluppe_app, "_write_record", return_value=True)
     def test_mock_node_once_ingests_decoded_payload(self, _write_record):
         response = self.client.post("/api/mock-node/once")
@@ -104,6 +132,16 @@ class MesskluppeAppControlTests(unittest.TestCase):
         self.assertEqual(payload["sample"]["file_id"], "mock-node")
         self.assertEqual(payload["status"]["last_record"]["tags"]["file_id"], "mock-node")
         self.assertGreaterEqual(payload["status"]["packets_received"], 1)
+
+    def test_status_includes_radio_runtime_telemetry(self):
+        response = self.client.get("/api/status")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertIn("radio_listening", payload)
+        self.assertIn("radio_rx_packets", payload)
+        self.assertIn("radio_rx_empty_reads", payload)
+        self.assertIn("radio_rx_last_error", payload)
 
 
 if __name__ == "__main__":
