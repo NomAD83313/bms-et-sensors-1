@@ -12,6 +12,8 @@ The new stack integration should preserve the protocol but avoid importing the o
 
 Old SQLite should not be used as the primary database in this stack. The migration target is the existing stack InfluxDB.
 
+Bring-up checklist: see `docs/messkluppe-bringup.md`.
+
 ## Protocol
 
 The node sends fixed 32-byte nRF24 payloads. Most node payloads are interpreted as sixteen little-endian `uint16` words. Host commands are encoded as up to eight unsigned 32-bit words, each split to bytes in the same order used by the legacy `translate_to_radio` helper.
