@@ -70,6 +70,9 @@ if MESSKLUPPE_INPUT_MODE not in {"mock", "radio", "disabled"}:
 MESSKLUPPE_FAKE_INTERVAL_SEC = float(os.getenv("MESSKLUPPE_FAKE_INTERVAL_SEC", "5.0"))
 MESSKLUPPE_RADIO_POLL_SEC = float(os.getenv("MESSKLUPPE_RADIO_POLL_SEC", "0.05"))
 MESSKLUPPE_RADIO_RECENT_PAYLOADS = max(1, int(os.getenv("MESSKLUPPE_RADIO_RECENT_PAYLOADS", "10")))
+MESSKLUPPE_RADIO_COMMAND_REPEAT_SEC = max(0.05, float(os.getenv("MESSKLUPPE_RADIO_COMMAND_REPEAT_SEC", "0.25")))
+MESSKLUPPE_RADIO_ACK_TX_ENABLED = os.getenv("MESSKLUPPE_RADIO_ACK_TX_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+MESSKLUPPE_RADIO_LIVE_REPEAT_ENABLED = os.getenv("MESSKLUPPE_RADIO_LIVE_REPEAT_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 MESSKLUPPE_CLIP_ID = max(1, int(os.getenv("MESSKLUPPE_CLIP_ID", str(DEFAULT_CLIP_ID))))
 MESSKLUPPE_MEASUREMENT = os.getenv("MESSKLUPPE_INFLUX_MEASUREMENT", DEFAULT_MEASUREMENT).strip() or DEFAULT_MEASUREMENT
 MESSKLUPPE_SOURCE_TAG = os.getenv("MESSKLUPPE_SOURCE_TAG", "messkluppe").strip() or "messkluppe"
@@ -99,8 +102,10 @@ COMMON_CSS = _load_common_css()
 app = Flask(__name__)
 _state_lock = threading.Lock()
 _influx_lock = threading.Lock()
+_radio_io_lock = threading.RLock()
 _stop_event = threading.Event()
 _collector_thread: threading.Thread | None = None
+_active_radio: MesskluppeRadioRx | None = None
 _influx_client: InfluxDBClient | None = None
 _influx_write_api: Any = None
 
@@ -122,10 +127,14 @@ _state: dict[str, Any] = {
     "radio_runtime": None,
     "radio_tx_commands": 0,
     "radio_tx_errors": 0,
+    "radio_tx_auto_repeats": 0,
+    "radio_ack_tx_enabled": MESSKLUPPE_RADIO_ACK_TX_ENABLED,
+    "radio_live_repeat_enabled": MESSKLUPPE_RADIO_LIVE_REPEAT_ENABLED,
     "radio_tx_last_at": None,
     "radio_tx_last_action": "",
     "radio_tx_last_payload_hex": "",
     "radio_tx_last_error": "",
+    "radio_tx_last_result": None,
     "radio_tx_recent_commands": [],
     "packets_received": 0,
     "records_written": 0,
@@ -348,8 +357,11 @@ __COMMON_CSS__
         ['Radio parse errors', data.radio_rx_parse_errors ?? 0],
         ['Radio error', data.radio_rx_last_error || '-'],
         ['Radio TX commands', data.radio_tx_commands ?? 0],
+        ['Radio ACK TX enabled', data.radio_ack_tx_enabled ? 'yes' : 'no'],
+        ['Radio live repeat', data.radio_live_repeat_enabled ? 'yes' : 'no'],
         ['Radio last TX', data.radio_tx_last_action ? `${data.radio_tx_last_action}: ${data.radio_tx_last_payload_hex || '-'}` : '-'],
         ['Radio TX error', data.radio_tx_last_error || '-'],
+        ['Radio TX result', data.radio_tx_last_result ? JSON.stringify(data.radio_tx_last_result) : '-'],
         ['Influx configured', data.influx_configured ? 'yes' : 'no'],
         ['Last packet', fmtTime(data.last_packet_at)],
         ['Last write', fmtTime(data.last_write_at)],
@@ -517,7 +529,30 @@ def _command_payload_for_action(action: str, payload: dict[str, Any] | None = No
     return words_to_radio_bytes_32([make_id_task(clip_id, TASK_IDLE), timestamp_ms])
 
 
-def _record_tx_command(action: str, payload: bytes, *, accepted: bool, detail: str = "", error: str = "") -> dict[str, Any]:
+def _queue_radio_ack_payload(payload: bytes) -> dict[str, Any]:
+    if not MESSKLUPPE_RADIO_ACK_TX_ENABLED:
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "radio_ack_tx_disabled",
+            "payload_hex": payload.hex(),
+            "size": len(payload),
+        }
+    with _radio_io_lock:
+        if _active_radio is None or not _active_radio.ready:
+            raise RuntimeError("radio_rx_loop_not_ready")
+        return _active_radio.write_ack_payload(payload, pipe=1, flush_tx=True, pad_to=int(_active_radio.config.get("payload_size", 32)))
+
+
+def _record_tx_command(
+    action: str,
+    payload: bytes,
+    *,
+    accepted: bool,
+    detail: str = "",
+    error: str = "",
+    tx_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     item = {
         "action": action,
         "accepted": accepted,
@@ -525,6 +560,7 @@ def _record_tx_command(action: str, payload: bytes, *, accepted: bool, detail: s
         "payload_hex": payload.hex(),
         "size": len(payload),
         "error": error,
+        "tx_result": tx_result,
         "ts": time.time(),
     }
     with _state_lock:
@@ -535,6 +571,7 @@ def _record_tx_command(action: str, payload: bytes, *, accepted: bool, detail: s
         _state["radio_tx_last_action"] = action
         _state["radio_tx_last_payload_hex"] = item["payload_hex"]
         _state["radio_tx_last_error"] = error
+        _state["radio_tx_last_result"] = tx_result
         _state["last_command"] = item
         if accepted:
             _state["radio_tx_commands"] = int(_state.get("radio_tx_commands", 0)) + 1
@@ -542,6 +579,13 @@ def _record_tx_command(action: str, payload: bytes, *, accepted: bool, detail: s
             _state["radio_tx_errors"] = int(_state.get("radio_tx_errors", 0)) + 1
             _state["command_errors"] = int(_state.get("command_errors", 0)) + 1
     return item
+
+
+def _repeat_live_ack_payload(radio: MesskluppeRadioRx) -> None:
+    payload = _command_payload_for_action("start_live", {"clip_id": MESSKLUPPE_CLIP_ID})
+    tx_result = radio.write_ack_payload(payload, pipe=1, flush_tx=True, pad_to=int(radio.config.get("payload_size", 32)))
+    _record_tx_command("start_live", payload, accepted=True, detail="ack_payload_auto_repeat_pipe_1", tx_result=tx_result)
+    _bump("radio_tx_auto_repeats")
 
 
 def _state_snapshot() -> dict[str, Any]:
@@ -570,8 +614,11 @@ def _command_result(action: str, *, accepted: bool, detail: str = "") -> dict[st
 
 def _accept_command(action: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     command_payload = _command_payload_for_action(action, payload)
-    detail = "tx_payload_built_mock_mode" if MESSKLUPPE_INPUT_MODE == "mock" else "tx_payload_built_radio_tx_pending"
-    return _record_tx_command(action, command_payload, accepted=True, detail=detail)
+    if MESSKLUPPE_INPUT_MODE == "radio":
+        tx_result = _queue_radio_ack_payload(command_payload)
+        detail = "ack_payload_queued_pipe_1" if not tx_result.get("skipped") else "tx_payload_built_ack_tx_disabled"
+        return _record_tx_command(action, command_payload, accepted=True, detail=detail, tx_result=tx_result)
+    return _record_tx_command(action, command_payload, accepted=True, detail="tx_payload_built_mock_mode")
 
 
 def _not_implemented(action: str) -> dict[str, Any]:
@@ -690,11 +737,15 @@ def _mock_collector_loop() -> None:
 
 
 def _radio_collector_loop() -> None:
+    global _active_radio
     poll_sec = max(0.005, MESSKLUPPE_RADIO_POLL_SEC)
+    next_live_repeat_at = 0.0
     _set_state(collector_running=True, radio_listening=False, radio_rx_ready=False, radio_rx_last_error="")
     _log("radio collector loop starting")
     try:
         with MesskluppeRadioRx() as radio:
+            with _radio_io_lock:
+                _active_radio = radio
             _set_state(
                 radio_config=radio.config,
                 radio_runtime=radio.snapshot(),
@@ -705,7 +756,17 @@ def _radio_collector_loop() -> None:
             _log("radio collector loop listening")
             while not _stop_event.is_set():
                 try:
-                    payload = radio.read_payload()
+                    with _radio_io_lock:
+                        snap = _state_snapshot()
+                        if (
+                            MESSKLUPPE_RADIO_ACK_TX_ENABLED
+                            and MESSKLUPPE_RADIO_LIVE_REPEAT_ENABLED
+                            and snap.get("live_mode")
+                            and time.time() >= next_live_repeat_at
+                        ):
+                            _repeat_live_ack_payload(radio)
+                            next_live_repeat_at = time.time() + MESSKLUPPE_RADIO_COMMAND_REPEAT_SEC
+                        payload = radio.read_payload()
                     if payload is None:
                         _bump("radio_rx_empty_reads")
                         _stop_event.wait(poll_sec)
@@ -723,6 +784,9 @@ def _radio_collector_loop() -> None:
         _set_state(radio_rx_last_error=str(exc), last_error=f"radio_start_error: {exc}")
         _log(f"radio collector loop failed: {exc}")
     finally:
+        with _radio_io_lock:
+            if _active_radio is not None:
+                _active_radio = None
         _set_state(collector_running=False, radio_listening=False, radio_rx_ready=False)
         _log("radio collector loop stopped")
 

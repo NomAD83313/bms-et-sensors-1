@@ -148,6 +148,7 @@ class MesskluppeAppControlTests(unittest.TestCase):
         self.assertIn("radio_rx_recent_payloads", payload)
         self.assertIn("radio_tx_commands", payload)
         self.assertIn("radio_tx_last_payload_hex", payload)
+        self.assertIn("radio_tx_auto_repeats", payload)
 
     def test_radio_recent_payloads_endpoint_returns_ring_buffer(self):
         with messkluppe_app._state_lock:
@@ -194,7 +195,8 @@ class MesskluppeAppControlTests(unittest.TestCase):
         self.assertEqual(snap["radio_rx_last_payload_hex"], f"{messkluppe_app.MESSKLUPPE_RADIO_RECENT_PAYLOADS + 1:02x}")
 
     def test_radio_recent_commands_endpoint_returns_tx_audit_trail(self):
-        self.client.post("/api/clip/deep-sleep/start")
+        with patch.object(messkluppe_app, "MESSKLUPPE_INPUT_MODE", "mock"):
+            self.client.post("/api/clip/deep-sleep/start")
 
         response = self.client.get("/api/radio/recent-commands")
 
@@ -206,13 +208,47 @@ class MesskluppeAppControlTests(unittest.TestCase):
         self.assertTrue(payload["commands"][-1]["payload_hex"].startswith("f2030000"))
 
     def test_file_list_builds_legacy_tx_payload(self):
-        response = self.client.get("/api/clip/files")
+        with patch.object(messkluppe_app, "MESSKLUPPE_INPUT_MODE", "mock"):
+            response = self.client.get("/api/clip/files")
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["command"]["action"], "list_files")
         self.assertTrue(payload["command"]["payload_hex"].startswith("06040000"))
+
+    def test_radio_mode_queues_ack_payload_for_command(self):
+        tx_result = {"ok": True, "pipe": 1, "payload_hex": "24040000c3ac4508", "size": 8}
+        with (
+            patch.object(messkluppe_app, "MESSKLUPPE_INPUT_MODE", "radio"),
+            patch.object(messkluppe_app, "_queue_radio_ack_payload", return_value=tx_result) as queue_mock,
+        ):
+            response = self.client.post("/api/clip/live/start", json={"display": "linearForce"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["command"]["detail"], "ack_payload_queued_pipe_1")
+        self.assertEqual(payload["command"]["tx_result"], tx_result)
+        queue_mock.assert_called_once()
+
+    def test_repeat_live_ack_payload_records_auto_repeat(self):
+        class FakeRadio:
+            config = {"payload_size": 32}
+
+            def write_ack_payload(self, payload, *, pipe=1, flush_tx=True, pad_to=None):
+                if pad_to:
+                    payload = payload.ljust(pad_to, b"\x00")
+                return {"ok": True, "pipe": pipe, "payload_hex": payload.hex(), "size": len(payload)}
+
+        before = messkluppe_app._state_snapshot().get("radio_tx_auto_repeats", 0)
+
+        messkluppe_app._repeat_live_ack_payload(FakeRadio())
+
+        snap = messkluppe_app._state_snapshot()
+        self.assertEqual(snap["radio_tx_auto_repeats"], before + 1)
+        self.assertEqual(snap["radio_tx_last_action"], "start_live")
+        self.assertEqual(snap["radio_tx_last_result"]["pipe"], 1)
 
 
 if __name__ == "__main__":

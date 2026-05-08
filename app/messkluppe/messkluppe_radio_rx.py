@@ -8,6 +8,8 @@ try:
         CONFIG,
         EN_AA,
         EN_RXADDR,
+        DYNPD,
+        FEATURE,
         FIFO_STATUS,
         NOP,
         RF_CH,
@@ -28,6 +30,8 @@ except ImportError:
         CONFIG,
         EN_AA,
         EN_RXADDR,
+        DYNPD,
+        FEATURE,
         FIFO_STATUS,
         NOP,
         RF_CH,
@@ -46,7 +50,9 @@ except ImportError:
 
 
 R_RX_PAYLOAD = 0x61
+W_ACK_PAYLOAD = 0xA8
 FLUSH_RX = 0xE2
+FLUSH_TX = 0xE1
 
 STATUS_RX_DR = 0x40
 STATUS_TX_DS = 0x20
@@ -125,8 +131,11 @@ class MesskluppeRadioRx:
         _write_register(self.spi, RF_SETUP, 0x05)
         _write_register(self.spi, RX_ADDR_P1, LEGACY_RX_ADDR_P1)
         _write_register(self.spi, RX_PW_P1, int(self.config["payload_size"]))
+        _write_register(self.spi, FEATURE, 0x06)
+        _write_register(self.spi, DYNPD, 0x3F)
         _write_register(self.spi, STATUS, STATUS_RX_DR | STATUS_TX_DS | STATUS_MAX_RT)
         self.spi.xfer2([FLUSH_RX])
+        self.spi.xfer2([FLUSH_TX])
         time.sleep(0.005)
         _write_ce(self.ce_handle, 1)
         time.sleep(0.002)
@@ -144,6 +153,33 @@ class MesskluppeRadioRx:
         payload = bytes(self.spi.xfer2([R_RX_PAYLOAD, *([NOP] * payload_size)])[1 : payload_size + 1])
         _write_register(self.spi, STATUS, STATUS_RX_DR | STATUS_TX_DS | STATUS_MAX_RT)
         return payload
+
+    def write_ack_payload(self, payload: bytes, *, pipe: int = 1, flush_tx: bool = True, pad_to: int | None = None) -> dict[str, Any]:
+        if self.spi is None:
+            raise RuntimeError("spi_not_open")
+        if pipe < 0 or pipe > 5:
+            raise ValueError("pipe must be between 0 and 5")
+        raw = bytes(payload)
+        if not raw or len(raw) > 32:
+            raise ValueError("ack payload must contain 1..32 bytes")
+        if pad_to is not None:
+            size = max(len(raw), min(32, int(pad_to)))
+            raw = raw.ljust(size, b"\x00")
+
+        if flush_tx:
+            self.spi.xfer2([FLUSH_TX])
+        status_before = int(self.spi.xfer2([NOP])[0])
+        response = self.spi.xfer2([W_ACK_PAYLOAD | pipe, *raw])
+        status_after = int(self.spi.xfer2([NOP])[0])
+        return {
+            "ok": True,
+            "pipe": pipe,
+            "payload_hex": raw.hex(),
+            "size": len(raw),
+            "status_before": status_before,
+            "status_after": status_after,
+            "response_status": int(response[0]) if response else None,
+        }
 
     def snapshot(self) -> dict[str, Any]:
         if self.spi is None:

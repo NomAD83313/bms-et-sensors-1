@@ -96,6 +96,7 @@ Relevant environment variables:
 - `MESSKLUPPE_FAKE_INTERVAL_SEC` default `5.0`.
 - `MESSKLUPPE_RADIO_POLL_SEC` default `0.05`.
 - `MESSKLUPPE_RADIO_RECENT_PAYLOADS` default `10`.
+- `MESSKLUPPE_RADIO_COMMAND_REPEAT_SEC` default `0.25`.
 - `MESSKLUPPE_CLIP_ID` default `1`.
 - `MESSKLUPPE_INFLUX_MEASUREMENT` default `messkluppe_sensor`.
 - `MESSKLUPPE_SOURCE_TAG` default `messkluppe`.
@@ -128,10 +129,13 @@ Radio TX telemetry:
 - `radio_tx_commands`: host commands converted to legacy radio payloads.
 - `radio_tx_last_action`: last command action name.
 - `radio_tx_last_payload_hex`: last host command payload as hex.
+- `radio_tx_last_result`: nRF24 ACK payload queue result when running in radio mode.
 - `radio_tx_recent_commands`: recent command ring buffer kept in memory only.
 - `radio_tx_errors`: command payload build failures.
+- `radio_tx_auto_repeats`: live-mode ACK payload repeats queued by the RX loop.
 
-The current TX layer builds and records legacy command payloads. Hardware transmission is intentionally still pending while the host RX loop owns the radio in PRX mode. This keeps the first bring-up stable and gives a visible command payload audit trail before node validation.
+The TX layer builds and records legacy command payloads. In radio mode it queues those commands as nRF24 ACK payloads on pipe `1`, matching the legacy host `writeAckPayload(1, ...)` pattern. The node receives the command on one of its regular writes if its firmware checks ACK payloads.
+While `live_mode` is active, the RX loop repeats the `1060` live command at `MESSKLUPPE_RADIO_COMMAND_REPEAT_SEC` cadence to match the legacy host behavior.
 
 ## Visualization
 

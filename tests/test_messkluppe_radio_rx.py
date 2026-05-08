@@ -24,6 +24,12 @@ class FakeSpi:
             return [0x0E]
         if command == 0x61:
             return [0x40, *range(32)]
+        if command == 0xA9:
+            self.ack_payload = list(data[1:])
+            return [0x0E, *([0] * (len(data) - 1))]
+        if command == 0xE1:
+            self.flushed_tx = True
+            return [0x0E]
         if command & 0xE0 == 0x20:
             reg = command & 0x1F
             if len(data) > 2:
@@ -57,6 +63,28 @@ class MesskluppeRadioRxTests(unittest.TestCase):
         payload = radio.read_payload()
 
         self.assertEqual(payload, bytes(range(32)))
+
+    def test_write_ack_payload_queues_pipe_one_payload(self):
+        radio = MesskluppeRadioRx({"payload_size": 32})
+        radio.spi = FakeSpi()
+
+        result = radio.write_ack_payload(bytes.fromhex("24040000c3ac4508"), pipe=1)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["pipe"], 1)
+        self.assertEqual(result["payload_hex"], "24040000c3ac4508")
+        self.assertEqual(radio.spi.ack_payload, list(bytes.fromhex("24040000c3ac4508")))
+        self.assertTrue(radio.spi.flushed_tx)
+
+    def test_write_ack_payload_can_pad_to_static_payload_size(self):
+        radio = MesskluppeRadioRx({"payload_size": 32})
+        radio.spi = FakeSpi()
+
+        result = radio.write_ack_payload(bytes.fromhex("24040000c3ac4508"), pipe=1, pad_to=32)
+
+        self.assertEqual(result["size"], 32)
+        self.assertEqual(radio.spi.ack_payload[:8], list(bytes.fromhex("24040000c3ac4508")))
+        self.assertEqual(radio.spi.ack_payload[8:], [0] * 24)
 
 
 if __name__ == "__main__":
