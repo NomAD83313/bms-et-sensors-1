@@ -11,6 +11,7 @@ COPY app/messkluppe/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app/shared/device-common.css .
 COPY app/messkluppe/messkluppe_app.py .
+COPY app/messkluppe/messkluppe_mock_node.py .
 COPY app/messkluppe/messkluppe_protocol.py .
 COPY app/messkluppe/messkluppe_radio_diag.py .
 COPY app/messkluppe/messkluppe_records.py .

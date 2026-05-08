@@ -44,8 +44,9 @@ The planned service is `messkluppe-collector`:
 The first runnable version is intentionally host-side only:
 
 - It starts as a Compose profile service, so the default stack is unchanged.
-- `MESSKLUPPE_FAKE_MODE=1` generates synthetic decoded packets and writes them to InfluxDB. This validates the storage path before real nRF24 hardware is connected.
-- Real nRF24/RPi GPIO support is still pending and should be added behind the same collector API.
+- `MESSKLUPPE_INPUT_MODE=mock` generates synthetic node packets in the same 32-byte legacy binary format and writes decoded records to InfluxDB. This validates the full storage and visualization path before node hardware is ready.
+- `MESSKLUPPE_INPUT_MODE=radio` is reserved for the future nRF24 RX loop. Current radio support covers SPI/CE/register diagnostics only.
+- `MESSKLUPPE_FAKE_MODE=1` is still accepted as a compatibility switch and maps to mock input when `MESSKLUPPE_INPUT_MODE` is not set.
 
 Run:
 
@@ -58,9 +59,10 @@ HTTP endpoints:
 - `GET /`: built-in collector status UI.
 - `GET /health`: collector health and state.
 - `GET /api/status`: collector state.
-- `POST /api/fake-once`: generate and ingest one synthetic packet.
-- `POST /api/fake/start`: start the synthetic packet loop.
-- `POST /api/fake/stop`: stop the synthetic packet loop.
+- `POST /api/mock-node/once`: generate and ingest one mock node packet.
+- `POST /api/mock-node/start`: start the mock node packet loop.
+- `POST /api/mock-node/stop`: stop the mock node packet loop.
+- `POST /api/fake-once`, `POST /api/fake/start`, and `POST /api/fake/stop`: compatibility aliases for the mock node endpoints.
 - `POST /api/ingest-hex`: ingest one 32-byte legacy payload as hex, useful for replay tests.
 
 Legacy-compatible control API skeleton:
@@ -77,13 +79,14 @@ Legacy-compatible control API skeleton:
 - `POST /api/clip/files/delete`.
 - `POST /api/clip/files/delete-all`.
 
-In fake mode these endpoints update collector state and return success. In real-radio mode they currently return `501` until the nRF24 transport is implemented.
+In mock mode these endpoints update collector state and return success. In radio mode they currently return `501` until the nRF24 transport is implemented.
 
 When the dashboard is running, nginx exposes the UI at `/messkluppe/` and the health probe at `/probe/messkluppe`.
 
 Relevant environment variables:
 
 - `MESSKLUPPE_APP_PORT` default `3080`.
+- `MESSKLUPPE_INPUT_MODE` default `mock`; allowed values are `mock`, `radio`, and `disabled`.
 - `MESSKLUPPE_FAKE_MODE` default `1`.
 - `MESSKLUPPE_FAKE_INTERVAL_SEC` default `5.0`.
 - `MESSKLUPPE_INFLUX_MEASUREMENT` default `messkluppe_sensor`.
@@ -104,6 +107,14 @@ Radio diagnostics:
 
 The collector writes decoded force packets to InfluxDB measurement `messkluppe_sensor`.
 
+Influx schema:
+
+- Measurement: `messkluppe_sensor` by default.
+- Tags: `source`, `clip_id`, `packet_task`, optional `file_id`.
+- Force fields used by the current dashboards: `force_x_raw`, `force_y_raw`, `force_z_raw`.
+- Additional decoded fields include `sensor_ms`, `line`, `unix_time`, `accel_x_raw`, `accel_y_raw`, `yaw_raw`, `yaw_deg`, `imu_temperature_raw`, `imu_temperature_c`, `clip_temperature_raw`, and `battery_raw`.
+- Mock node samples use `file_id=mock-node`; real downloaded files should use the legacy file timestamp or another stable file identifier.
+
 Graf App Lite exposes the data in two places:
 
 - `/graf/`: the All view includes the Messkluppe Force panel.
@@ -116,11 +127,12 @@ Grafana provisioning includes a `Messkluppe Force` panel in the main dashboard. 
 Initial code should stay hardware-independent:
 
 - `app/messkluppe/messkluppe_protocol.py`: byte order, task ids, packet parsing, command encoding.
+- `app/messkluppe/messkluppe_mock_node.py`: deterministic mock node payload generation for host-only pipeline testing.
 - `app/messkluppe/messkluppe_records.py`: decoded packet to Influx-ready records and line protocol.
-- `app/messkluppe/messkluppe_app.py`: minimal Flask collector app with fake ingest and Influx writing.
+- `app/messkluppe/messkluppe_app.py`: minimal Flask collector app with mock ingest, radio diagnostics, and Influx writing.
 - Unit tests under `tests/` using synthetic payloads.
 
-Hardware-facing nRF24/RPi GPIO code should be added as a separate layer after the protocol tests are stable.
+Hardware-facing nRF24/RPi GPIO RX code should be added as a separate layer after the protocol tests are stable. The host-side diagnostic layer already verifies SPI, CE GPIO, and nRF24 register access.
 
 ## Legacy Host Transfer
 

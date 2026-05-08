@@ -67,6 +67,8 @@ class MesskluppeAppControlTests(unittest.TestCase):
         self.assertIn("Start Logging", html)
         self.assertIn("Online Files", html)
         self.assertIn("startLoggingBtn", html)
+        self.assertIn("Mock once", html)
+        self.assertIn("api/mock-node/start", html)
         self.assertIn("api/clip/start-logging", html)
         self.assertIn("api/clip/files/delete-all", html)
         self.assertIn("Radio Diagnostics", html)
@@ -91,6 +93,17 @@ class MesskluppeAppControlTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["radio"], diag)
         self.assertEqual(payload["status"]["radio_last_diag"], diag)
+
+    @patch.object(messkluppe_app, "_write_record", return_value=True)
+    def test_mock_node_once_ingests_decoded_payload(self, _write_record):
+        response = self.client.post("/api/mock-node/once")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["sample"]["file_id"], "mock-node")
+        self.assertEqual(payload["status"]["last_record"]["tags"]["file_id"], "mock-node")
+        self.assertGreaterEqual(payload["status"]["packets_received"], 1)
 
 
 if __name__ == "__main__":

@@ -11,17 +11,22 @@ from influxdb_client import InfluxDBClient, Point, WritePrecision  # type: ignor
 from influxdb_client.client.write_api import SYNCHRONOUS  # type: ignore
 
 try:
-    from .messkluppe_protocol import TASK_FILE_DOWNLOAD, decode_file_data_packet, make_id_task, words16_to_legacy_payload
+    from .messkluppe_mock_node import build_mock_node_sample
+    from .messkluppe_protocol import decode_file_data_packet
     from .messkluppe_radio_diag import radio_diag_config_from_env, run_radio_diagnostics
     from .messkluppe_records import DEFAULT_MEASUREMENT, MesskluppeInfluxRecord, file_packet_to_influx_record
 except ImportError:
-    from messkluppe_protocol import TASK_FILE_DOWNLOAD, decode_file_data_packet, make_id_task, words16_to_legacy_payload
+    from messkluppe_mock_node import build_mock_node_sample
+    from messkluppe_protocol import decode_file_data_packet
     from messkluppe_radio_diag import radio_diag_config_from_env, run_radio_diagnostics
     from messkluppe_records import DEFAULT_MEASUREMENT, MesskluppeInfluxRecord, file_packet_to_influx_record
 
 
 MESSKLUPPE_APP_PORT = int(os.getenv("MESSKLUPPE_APP_PORT", "3080"))
 MESSKLUPPE_FAKE_MODE = os.getenv("MESSKLUPPE_FAKE_MODE", "1").strip().lower() in {"1", "true", "yes", "on"}
+MESSKLUPPE_INPUT_MODE = os.getenv("MESSKLUPPE_INPUT_MODE", "mock" if MESSKLUPPE_FAKE_MODE else "radio").strip().lower() or "mock"
+if MESSKLUPPE_INPUT_MODE not in {"mock", "radio", "disabled"}:
+    MESSKLUPPE_INPUT_MODE = "mock" if MESSKLUPPE_FAKE_MODE else "disabled"
 MESSKLUPPE_FAKE_INTERVAL_SEC = float(os.getenv("MESSKLUPPE_FAKE_INTERVAL_SEC", "5.0"))
 MESSKLUPPE_MEASUREMENT = os.getenv("MESSKLUPPE_INFLUX_MEASUREMENT", DEFAULT_MEASUREMENT).strip() or DEFAULT_MEASUREMENT
 MESSKLUPPE_SOURCE_TAG = os.getenv("MESSKLUPPE_SOURCE_TAG", "messkluppe").strip() or "messkluppe"
@@ -60,6 +65,8 @@ _state: dict[str, Any] = {
     "started_at": time.time(),
     "collector_running": False,
     "fake_mode": MESSKLUPPE_FAKE_MODE,
+    "input_mode": MESSKLUPPE_INPUT_MODE,
+    "radio_rx_ready": False,
     "packets_received": 0,
     "records_written": 0,
     "write_errors": 0,
@@ -130,13 +137,13 @@ __COMMON_CSS__
       <div class="page-title">
         <div class="eyebrow">Legacy nRF24 Collector</div>
         <h1>Messkluppe Collector</h1>
-        <p class="page-subtitle">Host-side collector scaffold for Messkluppe binary payloads. Fake mode validates the InfluxDB path before node hardware is connected.</p>
+        <p class="page-subtitle">Host-side collector scaffold for Messkluppe binary payloads. Mock mode validates the InfluxDB path before node hardware is connected.</p>
       </div>
       <div class="toolbar">
         <button type="button" id="refreshBtn" class="graf-link-button">Refresh</button>
-        <button type="button" id="fakeOnceBtn" class="graf-link-button">Fake once</button>
-        <button type="button" id="startBtn" class="graf-link-button">Start fake loop</button>
-        <button type="button" id="stopBtn" class="graf-link-button">Stop fake loop</button>
+        <button type="button" id="fakeOnceBtn" class="graf-link-button">Mock once</button>
+        <button type="button" id="startBtn" class="graf-link-button">Start mock loop</button>
+        <button type="button" id="stopBtn" class="graf-link-button">Stop mock loop</button>
         <a class="graf-link-button" href="/health.html">Health</a>
       </div>
     </header>
@@ -168,7 +175,7 @@ __COMMON_CSS__
             <button type="button" id="deepSleepStartBtn" class="graf-link-button">Start deep sleep</button>
             <button type="button" id="deepSleepStopBtn" class="graf-link-button">Stop deep sleep</button>
           </div>
-          <div class="empty-note">These controls mirror the legacy Host UI. In fake mode they update collector state only.</div>
+          <div class="empty-note">These controls mirror the legacy Host UI. In mock mode they update collector state only.</div>
         </div>
       </div>
       <div class="card panel">
@@ -220,7 +227,7 @@ __COMMON_CSS__
       <div class="panel-head"><h2>Last Record</h2><span id="recordTime">-</span></div>
       <pre id="lastRecord">-</pre>
     </section>
-    <div class="footer">Real radio support is pending; fake mode validates the Influx path before node hardware is available.</div>
+    <div class="footer">Real radio RX support is pending; mock mode validates the Influx path before node hardware is available.</div>
   </main>
   <script>
     const statusPill = document.getElementById('statusPill');
@@ -248,7 +255,7 @@ __COMMON_CSS__
       const ok = data.ok && !data.last_error;
       statusPill.className = `status-pill ${ok ? 'status-ok' : (data.last_error ? 'status-err' : 'status-warn')}`;
       statusPill.textContent = ok ? 'ok' : (data.last_error ? 'error' : 'degraded');
-      document.getElementById('modeValue').textContent = data.fake_mode ? 'fake' : 'real';
+      document.getElementById('modeValue').textContent = data.input_mode || (data.fake_mode ? 'mock' : 'radio');
       document.getElementById('packetsValue').textContent = data.packets_received ?? 0;
       document.getElementById('writesValue').textContent = data.records_written ?? 0;
       document.getElementById('sampleRateInput').value = data.sample_rate ?? 2500;
@@ -271,6 +278,8 @@ __COMMON_CSS__
       stateRows.innerHTML = '';
       [
         ['Collector running', data.collector_running ? 'yes' : 'no'],
+        ['Input mode', data.input_mode || '-'],
+        ['Radio RX ready', data.radio_rx_ready ? 'yes' : 'no'],
         ['Influx configured', data.influx_configured ? 'yes' : 'no'],
         ['Last packet', fmtTime(data.last_packet_at)],
         ['Last write', fmtTime(data.last_write_at)],
@@ -286,8 +295,8 @@ __COMMON_CSS__
       lastRecord.textContent = JSON.stringify(data.last_record || {}, null, 2);
       recordTime.textContent = data.last_record && data.last_record.time_ns ? `${data.last_record.time_ns} ns` : '-';
       updated.textContent = `updated ${new Date().toLocaleTimeString()}`;
-      document.getElementById('startBtn').disabled = !data.fake_mode || data.collector_running;
-      document.getElementById('stopBtn').disabled = !data.fake_mode || !data.collector_running;
+      document.getElementById('startBtn').disabled = data.input_mode !== 'mock' || data.collector_running;
+      document.getElementById('stopBtn').disabled = data.input_mode !== 'mock' || !data.collector_running;
     }
 
     async function api(path, options = {}) {
@@ -316,9 +325,9 @@ __COMMON_CSS__
     }
 
     document.getElementById('refreshBtn').addEventListener('click', refresh);
-    document.getElementById('fakeOnceBtn').addEventListener('click', async () => { await api('api/fake-once', { method: 'POST' }); await refresh(); });
-    document.getElementById('startBtn').addEventListener('click', async () => { await api('api/fake/start', { method: 'POST' }); await refresh(); });
-    document.getElementById('stopBtn').addEventListener('click', async () => { await api('api/fake/stop', { method: 'POST' }); await refresh(); });
+    document.getElementById('fakeOnceBtn').addEventListener('click', async () => { await api('api/mock-node/once', { method: 'POST' }); await refresh(); });
+    document.getElementById('startBtn').addEventListener('click', async () => { await api('api/mock-node/start', { method: 'POST' }); await refresh(); });
+    document.getElementById('stopBtn').addEventListener('click', async () => { await api('api/mock-node/stop', { method: 'POST' }); await refresh(); });
     document.getElementById('startLoggingBtn').addEventListener('click', async () => {
       await postJson('api/clip/start-logging', {
         sample_rate: Number(document.getElementById('sampleRateInput').value || 2500),
@@ -341,12 +350,12 @@ __COMMON_CSS__
       const files = Array.isArray(data.files) ? data.files : [];
       onlineFilesBody.innerHTML = files.length
         ? files.map((file) => `<tr><td>${file.name || '-'}</td><td>${file.lines ?? '-'}</td><td>${file.size ?? '-'}</td><td><button type="button" class="graf-link-button" data-file="${file.name || ''}">Download</button></td></tr>`).join('')
-        : '<tr><td colspan="4" class="empty-note">No online files available in fake mode.</td></tr>';
+        : '<tr><td colspan="4" class="empty-note">No online files available in mock mode.</td></tr>';
       await refresh();
     });
     document.getElementById('deleteAllFilesBtn').addEventListener('click', async () => {
       await postJson('api/clip/files/delete-all');
-      onlineFilesBody.innerHTML = '<tr><td colspan="4" class="empty-note">No online files available in fake mode.</td></tr>';
+      onlineFilesBody.innerHTML = '<tr><td colspan="4" class="empty-note">No online files available in mock mode.</td></tr>';
       await refresh();
     });
     document.getElementById('radioDiagBtn').addEventListener('click', async () => {
@@ -392,7 +401,7 @@ def _command_result(action: str, *, accepted: bool, detail: str = "") -> dict[st
         "action": action,
         "accepted": accepted,
         "detail": detail,
-        "real_radio_pending": not MESSKLUPPE_FAKE_MODE,
+        "real_radio_pending": MESSKLUPPE_INPUT_MODE != "mock",
         "ts": time.time(),
     }
     with _state_lock:
@@ -403,7 +412,7 @@ def _command_result(action: str, *, accepted: bool, detail: str = "") -> dict[st
 
 
 def _fake_accept(action: str) -> dict[str, Any]:
-    return _command_result(action, accepted=True, detail="accepted_in_fake_mode")
+    return _command_result(action, accepted=True, detail="accepted_in_mock_mode")
 
 
 def _not_implemented(action: str) -> dict[str, Any]:
@@ -413,7 +422,7 @@ def _not_implemented(action: str) -> dict[str, Any]:
 def _apply_control_action(action: str, updates: dict[str, Any]) -> tuple[dict[str, Any], int]:
     with _state_lock:
         _state.update(updates)
-    result = _fake_accept(action) if MESSKLUPPE_FAKE_MODE else _not_implemented(action)
+    result = _fake_accept(action) if MESSKLUPPE_INPUT_MODE == "mock" else _not_implemented(action)
     status = 200 if result["accepted"] else 501
     return {"ok": result["accepted"], "command": result, "status": _state_snapshot()}, status
 
@@ -472,28 +481,6 @@ def _write_record(record: MesskluppeInfluxRecord) -> bool:
         return False
 
 
-def _fake_payload(seq: int) -> bytes:
-    unix_time = int(time.time())
-    return words16_to_legacy_payload([
-        make_id_task(1, TASK_FILE_DOWNLOAD),
-        (unix_time >> 16) & 0xFFFF,
-        unix_time & 0xFFFF,
-        (seq >> 16) & 0xFFFF,
-        seq & 0xFFFF,
-        int(time.time() * 1000) % 1000,
-        2000 + (seq % 20),
-        2010 + (seq % 20),
-        2020 + (seq % 20),
-        0,
-        0,
-        900 + (seq % 360),
-        2500,
-        2600,
-        3700,
-        0,
-    ])
-
-
 def ingest_payload(payload: bytes, *, file_id: str | int | None = None) -> bool:
     try:
         packet = decode_file_data_packet(payload)
@@ -520,28 +507,29 @@ def ingest_payload(payload: bytes, *, file_id: str | int | None = None) -> bool:
         return False
 
 
-def _fake_collector_loop() -> None:
+def _mock_collector_loop() -> None:
     _set_state(collector_running=True)
     seq = 1
-    _log("fake collector loop started")
+    _log("mock node collector loop started")
     while not _stop_event.is_set():
-        ingest_payload(_fake_payload(seq), file_id="fake")
+        sample = build_mock_node_sample(seq=seq)
+        ingest_payload(sample.payload, file_id=sample.file_id)
         seq += 1
         _stop_event.wait(MESSKLUPPE_FAKE_INTERVAL_SEC)
     _set_state(collector_running=False)
-    _log("fake collector loop stopped")
+    _log("mock node collector loop stopped")
 
 
 def _start_collector() -> None:
     global _collector_thread
     if _collector_thread is not None and _collector_thread.is_alive():
         return
-    if not MESSKLUPPE_FAKE_MODE:
-        _set_state(last_error="real_radio_mode_not_implemented")
-        _log("real radio mode is not implemented yet")
+    if MESSKLUPPE_INPUT_MODE != "mock":
+        _set_state(last_error=f"{MESSKLUPPE_INPUT_MODE}_input_mode_not_implemented")
+        _log(f"{MESSKLUPPE_INPUT_MODE} input mode is not implemented yet")
         return
     _stop_event.clear()
-    _collector_thread = threading.Thread(target=_fake_collector_loop, daemon=True)
+    _collector_thread = threading.Thread(target=_mock_collector_loop, daemon=True)
     _collector_thread.start()
 
 
@@ -588,9 +576,15 @@ def api_ingest_hex():
 
 @app.route("/api/fake-once", methods=["POST"])
 def api_fake_once():
+    return api_mock_node_once()
+
+
+@app.route("/api/mock-node/once", methods=["POST"])
+def api_mock_node_once():
     seq = int(time.time()) & 0xFFFF
-    ok = ingest_payload(_fake_payload(seq), file_id="fake")
-    return jsonify({"ok": ok, "status": _state_snapshot()})
+    sample = build_mock_node_sample(seq=seq)
+    ok = ingest_payload(sample.payload, file_id=sample.file_id)
+    return jsonify({"ok": ok, "sample": {"seq": sample.seq, "file_id": sample.file_id, "unix_time": sample.unix_time}, "status": _state_snapshot()})
 
 
 @app.route("/api/clip/start-logging", methods=["POST"])
@@ -669,7 +663,7 @@ def api_clip_live_stop():
 
 @app.route("/api/clip/files", methods=["GET"])
 def api_clip_files():
-    result = _fake_accept("list_files") if MESSKLUPPE_FAKE_MODE else _not_implemented("list_files")
+    result = _fake_accept("list_files") if MESSKLUPPE_INPUT_MODE == "mock" else _not_implemented("list_files")
     status = 200 if result["accepted"] else 501
     return jsonify({"ok": result["accepted"], "command": result, "files": _state_snapshot().get("online_files", []), "status": _state_snapshot()}), status
 
@@ -679,7 +673,7 @@ def api_clip_file_download():
     payload = _json_payload()
     filename = str(payload.get("filename", "")).strip()
     lines = _int_payload_value(payload, "lines", 0, minimum=0, maximum=10_000_000)
-    result = _fake_accept("download_file") if MESSKLUPPE_FAKE_MODE else _not_implemented("download_file")
+    result = _fake_accept("download_file") if MESSKLUPPE_INPUT_MODE == "mock" else _not_implemented("download_file")
     status = 200 if result["accepted"] else 501
     return jsonify({"ok": result["accepted"], "command": result, "filename": filename, "lines": lines, "status": _state_snapshot()}), status
 
@@ -688,7 +682,7 @@ def api_clip_file_download():
 def api_clip_file_delete():
     payload = _json_payload()
     filename = str(payload.get("filename", "")).strip()
-    result = _fake_accept("delete_file") if MESSKLUPPE_FAKE_MODE else _not_implemented("delete_file")
+    result = _fake_accept("delete_file") if MESSKLUPPE_INPUT_MODE == "mock" else _not_implemented("delete_file")
     status = 200 if result["accepted"] else 501
     return jsonify({"ok": result["accepted"], "command": result, "filename": filename, "status": _state_snapshot()}), status
 
@@ -697,21 +691,31 @@ def api_clip_file_delete():
 def api_clip_files_delete_all():
     with _state_lock:
         _state["online_files"] = []
-    result = _fake_accept("delete_all_files") if MESSKLUPPE_FAKE_MODE else _not_implemented("delete_all_files")
+    result = _fake_accept("delete_all_files") if MESSKLUPPE_INPUT_MODE == "mock" else _not_implemented("delete_all_files")
     status = 200 if result["accepted"] else 501
     return jsonify({"ok": result["accepted"], "command": result, "status": _state_snapshot()}), status
 
 
 @app.route("/api/fake/start", methods=["POST"])
 def api_fake_start():
-    if not MESSKLUPPE_FAKE_MODE:
-        return jsonify({"ok": False, "error": "fake_mode_disabled", "status": _state_snapshot()}), 409
+    return api_mock_node_start()
+
+
+@app.route("/api/mock-node/start", methods=["POST"])
+def api_mock_node_start():
+    if MESSKLUPPE_INPUT_MODE != "mock":
+        return jsonify({"ok": False, "error": "mock_input_mode_disabled", "status": _state_snapshot()}), 409
     _start_collector()
     return jsonify({"ok": True, "status": _state_snapshot()})
 
 
 @app.route("/api/fake/stop", methods=["POST"])
 def api_fake_stop():
+    return api_mock_node_stop()
+
+
+@app.route("/api/mock-node/stop", methods=["POST"])
+def api_mock_node_stop():
     _stop_collector()
     return jsonify({"ok": True, "status": _state_snapshot()})
 
