@@ -1,0 +1,677 @@
+from __future__ import annotations
+
+import os
+import threading
+import time
+from pathlib import Path
+from typing import Any
+
+from flask import Flask, Response, jsonify, request
+from influxdb_client import InfluxDBClient, Point, WritePrecision  # type: ignore
+from influxdb_client.client.write_api import SYNCHRONOUS  # type: ignore
+
+try:
+    from .messkluppe_protocol import TASK_FILE_DOWNLOAD, decode_file_data_packet, make_id_task, words16_to_legacy_payload
+    from .messkluppe_records import DEFAULT_MEASUREMENT, MesskluppeInfluxRecord, file_packet_to_influx_record
+except ImportError:
+    from messkluppe_protocol import TASK_FILE_DOWNLOAD, decode_file_data_packet, make_id_task, words16_to_legacy_payload
+    from messkluppe_records import DEFAULT_MEASUREMENT, MesskluppeInfluxRecord, file_packet_to_influx_record
+
+
+MESSKLUPPE_APP_PORT = int(os.getenv("MESSKLUPPE_APP_PORT", "3080"))
+MESSKLUPPE_FAKE_MODE = os.getenv("MESSKLUPPE_FAKE_MODE", "1").strip().lower() in {"1", "true", "yes", "on"}
+MESSKLUPPE_FAKE_INTERVAL_SEC = float(os.getenv("MESSKLUPPE_FAKE_INTERVAL_SEC", "5.0"))
+MESSKLUPPE_MEASUREMENT = os.getenv("MESSKLUPPE_INFLUX_MEASUREMENT", DEFAULT_MEASUREMENT).strip() or DEFAULT_MEASUREMENT
+MESSKLUPPE_SOURCE_TAG = os.getenv("MESSKLUPPE_SOURCE_TAG", "messkluppe").strip() or "messkluppe"
+INFLUX_URL = os.getenv("INFLUX_URL", "http://influxdb:8086").strip()
+INFLUX_ORG = os.getenv("INFLUX_ORG", "").strip()
+INFLUX_BUCKET = os.getenv("INFLUX_BUCKET", "").strip()
+INFLUX_TOKEN = os.getenv("INFLUX_TOKEN", "").strip()
+
+
+def _load_common_css() -> str:
+    base_dir = Path(__file__).resolve().parent
+    candidates = (
+        base_dir / "static" / "device-common.css",
+        base_dir / "device-common.css",
+        base_dir.parent / "shared" / "device-common.css",
+        Path("/app/static/device-common.css"),
+        Path("/app/device-common.css"),
+    )
+    for path in candidates:
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+    return ""
+
+
+COMMON_CSS = _load_common_css()
+
+app = Flask(__name__)
+_state_lock = threading.Lock()
+_influx_lock = threading.Lock()
+_stop_event = threading.Event()
+_collector_thread: threading.Thread | None = None
+_influx_client: InfluxDBClient | None = None
+_influx_write_api: Any = None
+
+_state: dict[str, Any] = {
+    "started_at": time.time(),
+    "collector_running": False,
+    "fake_mode": MESSKLUPPE_FAKE_MODE,
+    "packets_received": 0,
+    "records_written": 0,
+    "write_errors": 0,
+    "parse_errors": 0,
+    "last_packet_at": None,
+    "last_write_at": None,
+    "last_error": "",
+    "last_record": None,
+    "clip_mode": "idle",
+    "clip_task": 0,
+    "logging": False,
+    "deep_sleep": False,
+    "live_mode": False,
+    "live_display": "linearForce",
+    "sample_rate": 2500,
+    "logging_time": 100,
+    "last_command": None,
+    "command_errors": 0,
+    "online_files": [],
+}
+
+INDEX_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Messkluppe Collector</title>
+  <style>
+__COMMON_CSS__
+    body { padding: 24px; }
+    .page-shell { max-width: 1180px; margin: 0 auto; display: grid; gap: 18px; }
+    .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+    .page-title { display: grid; gap: 12px; }
+    .page-title h1 { margin: 0; font-size: 1.9rem; line-height: 1.1; letter-spacing: 0; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; }
+    .toolbar button:disabled { opacity: .56; cursor: not-allowed; }
+    .overview-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .control-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    .panel { padding: 22px; }
+    .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 16px; }
+    .panel-head h2 { margin: 0; font-size: 1.05rem; letter-spacing: 0; }
+    .control-surface { display: grid; gap: 12px; padding: 14px 16px; border-radius: 18px; background: linear-gradient(180deg,#fbfdff 0%,#f4f8fb 100%); border: 1px solid var(--line); }
+    .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: .78rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+    input, select { width: 100%; min-height: 42px; border: 1px solid var(--line-strong); border-radius: 14px; padding: 0 12px; color: var(--ink); background: #fff; font: inherit; }
+    .button-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: left; font-size: .9rem; }
+    th { color: var(--muted); font-size: .76rem; letter-spacing: .05em; text-transform: uppercase; }
+    .empty-note { color: var(--muted); font-size: .92rem; line-height: 1.45; }
+    .state-list { display: grid; gap: 0; }
+    .state-row { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 12px; padding: 9px 0; border-top: 1px solid var(--line); font-size: .94rem; }
+    .state-row:first-child { border-top: 0; }
+    .state-key { color: var(--muted); font-weight: 700; }
+    pre { margin: 0; padding: 18px; min-height: 180px; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 18px; background: #0d1722; color: #d5e9ff; line-height: 1.45; font-size: .9rem; box-shadow: inset 0 1px 0 rgba(255,255,255,.03); }
+    .footer { color: var(--muted); font-size: .9rem; line-height: 1.45; }
+    @media (max-width: 900px) { .page-head { display: grid; } .toolbar { justify-content: flex-start; } .overview-grid, .control-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 720px) { .control-grid, .form-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 560px) { body { padding: 18px 14px 32px; } .overview-grid { grid-template-columns: 1fr; } .state-row { grid-template-columns: 1fr; gap: 3px; } }
+  </style>
+</head>
+<body>
+  <main class="page-shell">
+    <header class="page-head">
+      <div class="page-title">
+        <div class="eyebrow">Legacy nRF24 Collector</div>
+        <h1>Messkluppe Collector</h1>
+        <p class="page-subtitle">Host-side collector scaffold for Messkluppe binary payloads. Fake mode validates the InfluxDB path before node hardware is connected.</p>
+      </div>
+      <div class="toolbar">
+        <button type="button" id="refreshBtn" class="graf-link-button">Refresh</button>
+        <button type="button" id="fakeOnceBtn" class="graf-link-button">Fake once</button>
+        <button type="button" id="startBtn" class="graf-link-button">Start fake loop</button>
+        <button type="button" id="stopBtn" class="graf-link-button">Stop fake loop</button>
+        <a class="graf-link-button" href="/health.html">Health</a>
+      </div>
+    </header>
+    <div class="overview-grid">
+      <div class="stat-block"><div class="stat-label">Status</div><div class="stat-value"><span class="status-pill status-warn" id="statusPill">checking</span></div></div>
+      <div class="stat-block"><div class="stat-label">Mode</div><div class="stat-value" id="modeValue">-</div></div>
+      <div class="stat-block"><div class="stat-label">Packets</div><div class="stat-value" id="packetsValue">-</div></div>
+      <div class="stat-block"><div class="stat-label">Influx writes</div><div class="stat-value" id="writesValue">-</div></div>
+    </div>
+    <section class="control-grid">
+      <div class="card panel">
+        <div class="panel-head"><h2>Start Logging</h2><span class="status-pill status-warn" id="loggingPill">idle</span></div>
+        <div class="control-surface">
+          <div class="form-grid">
+            <label>Sample rate Hz<input id="sampleRateInput" type="number" min="1" step="1" value="2500"></label>
+            <label>Logging time sec<input id="loggingTimeInput" type="number" min="1" step="1" value="100"></label>
+          </div>
+          <div class="button-row">
+            <button type="button" id="startLoggingBtn" class="graf-link-button">Start logging</button>
+            <button type="button" id="stopLoggingBtn" class="graf-link-button">Stop logging</button>
+          </div>
+        </div>
+      </div>
+      <div class="card panel">
+        <div class="panel-head"><h2>Clip Mode</h2><span id="clipTaskLabel">task -</span></div>
+        <div class="control-surface">
+          <div class="button-row">
+            <button type="button" id="resetModeBtn" class="graf-link-button">Reset mode</button>
+            <button type="button" id="deepSleepStartBtn" class="graf-link-button">Start deep sleep</button>
+            <button type="button" id="deepSleepStopBtn" class="graf-link-button">Stop deep sleep</button>
+          </div>
+          <div class="empty-note">These controls mirror the legacy Host UI. In fake mode they update collector state only.</div>
+        </div>
+      </div>
+      <div class="card panel">
+        <div class="panel-head"><h2>Live Data</h2><span class="status-pill status-warn" id="livePill">stopped</span></div>
+        <div class="control-surface">
+          <label>Display values
+            <select id="liveDisplaySelect">
+              <option value="linearForce">Force</option>
+              <option value="raw">Bits</option>
+            </select>
+          </label>
+          <div class="button-row">
+            <button type="button" id="liveStartBtn" class="graf-link-button">Start live</button>
+            <button type="button" id="liveStopBtn" class="graf-link-button">Stop live</button>
+          </div>
+        </div>
+      </div>
+      <div class="card panel">
+        <div class="panel-head"><h2>Online Files</h2><button type="button" id="refreshFilesBtn" class="graf-link-button">Refresh list</button></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Name</th><th>Lines</th><th>Size</th><th>Action</th></tr></thead>
+            <tbody id="onlineFilesBody"><tr><td colspan="4" class="empty-note">No files loaded. Real radio transport is pending.</td></tr></tbody>
+          </table>
+        </div>
+        <div class="button-row" style="margin-top:12px">
+          <button type="button" id="deleteAllFilesBtn" class="graf-link-button">Delete all online files</button>
+        </div>
+      </div>
+    </section>
+    <section class="card panel">
+      <div class="panel-head"><h2>Collector State</h2><span id="updated">-</span></div>
+      <div id="stateRows" class="state-list"></div>
+    </section>
+    <section class="card panel">
+      <div class="panel-head"><h2>Last Record</h2><span id="recordTime">-</span></div>
+      <pre id="lastRecord">-</pre>
+    </section>
+    <div class="footer">Real radio support is pending; fake mode validates the Influx path before node hardware is available.</div>
+  </main>
+  <script>
+    const statusPill = document.getElementById('statusPill');
+    const stateRows = document.getElementById('stateRows');
+    const lastRecord = document.getElementById('lastRecord');
+    const recordTime = document.getElementById('recordTime');
+    const updated = document.getElementById('updated');
+    const onlineFilesBody = document.getElementById('onlineFilesBody');
+
+    function row(label, value) {
+      const div = document.createElement('div');
+      div.className = 'state-row';
+      div.innerHTML = `<div class="state-key">${label}</div><div>${value ?? '-'}</div>`;
+      return div;
+    }
+
+    function fmtTime(value) {
+      if (!value) return '-';
+      return new Date(Number(value) * 1000).toLocaleString();
+    }
+
+    function render(data) {
+      const ok = data.ok && !data.last_error;
+      statusPill.className = `status-pill ${ok ? 'status-ok' : (data.last_error ? 'status-err' : 'status-warn')}`;
+      statusPill.textContent = ok ? 'ok' : (data.last_error ? 'error' : 'degraded');
+      document.getElementById('modeValue').textContent = data.fake_mode ? 'fake' : 'real';
+      document.getElementById('packetsValue').textContent = data.packets_received ?? 0;
+      document.getElementById('writesValue').textContent = data.records_written ?? 0;
+      document.getElementById('sampleRateInput').value = data.sample_rate ?? 2500;
+      document.getElementById('loggingTimeInput').value = data.logging_time ?? 100;
+      document.getElementById('liveDisplaySelect').value = data.live_display || 'linearForce';
+      document.getElementById('clipTaskLabel').textContent = `task ${data.clip_task ?? '-'}`;
+      document.getElementById('loggingPill').className = `status-pill ${data.logging ? 'status-ok' : 'status-warn'}`;
+      document.getElementById('loggingPill').textContent = data.logging ? 'logging' : 'idle';
+      document.getElementById('livePill').className = `status-pill ${data.live_mode ? 'status-ok' : 'status-warn'}`;
+      document.getElementById('livePill').textContent = data.live_mode ? 'running' : 'stopped';
+      stateRows.innerHTML = '';
+      [
+        ['Collector running', data.collector_running ? 'yes' : 'no'],
+        ['Influx configured', data.influx_configured ? 'yes' : 'no'],
+        ['Last packet', fmtTime(data.last_packet_at)],
+        ['Last write', fmtTime(data.last_write_at)],
+        ['Parse errors', data.parse_errors ?? 0],
+        ['Write errors', data.write_errors ?? 0],
+        ['Last error', data.last_error || '-'],
+        ['Last command', data.last_command ? `${data.last_command.action}: ${data.last_command.detail}` : '-'],
+        ['Command errors', data.command_errors ?? 0],
+        ['Uptime', `${data.uptime_sec ?? 0}s`],
+      ].forEach(([k, v]) => stateRows.appendChild(row(k, v)));
+      lastRecord.textContent = JSON.stringify(data.last_record || {}, null, 2);
+      recordTime.textContent = data.last_record && data.last_record.time_ns ? `${data.last_record.time_ns} ns` : '-';
+      updated.textContent = `updated ${new Date().toLocaleTimeString()}`;
+      document.getElementById('startBtn').disabled = !data.fake_mode || data.collector_running;
+      document.getElementById('stopBtn').disabled = !data.fake_mode || !data.collector_running;
+    }
+
+    async function api(path, options = {}) {
+      const res = await fetch(path, { cache: 'no-store', ...options });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      return data.status || data;
+    }
+
+    async function postJson(path, payload = {}) {
+      return api(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    }
+
+    async function refresh() {
+      try { render(await api('api/status')); }
+      catch (err) {
+        statusPill.className = 'status-pill status-err';
+        statusPill.textContent = 'down';
+        stateRows.innerHTML = '';
+        stateRows.appendChild(row('Error', err.message || err));
+      }
+    }
+
+    document.getElementById('refreshBtn').addEventListener('click', refresh);
+    document.getElementById('fakeOnceBtn').addEventListener('click', async () => { await api('api/fake-once', { method: 'POST' }); await refresh(); });
+    document.getElementById('startBtn').addEventListener('click', async () => { await api('api/fake/start', { method: 'POST' }); await refresh(); });
+    document.getElementById('stopBtn').addEventListener('click', async () => { await api('api/fake/stop', { method: 'POST' }); await refresh(); });
+    document.getElementById('startLoggingBtn').addEventListener('click', async () => {
+      await postJson('api/clip/start-logging', {
+        sample_rate: Number(document.getElementById('sampleRateInput').value || 2500),
+        logging_time: Number(document.getElementById('loggingTimeInput').value || 100),
+      });
+      await refresh();
+    });
+    document.getElementById('stopLoggingBtn').addEventListener('click', async () => { await postJson('api/clip/stop-logging'); await refresh(); });
+    document.getElementById('resetModeBtn').addEventListener('click', async () => { await postJson('api/clip/reset-mode'); await refresh(); });
+    document.getElementById('deepSleepStartBtn').addEventListener('click', async () => { await postJson('api/clip/deep-sleep/start'); await refresh(); });
+    document.getElementById('deepSleepStopBtn').addEventListener('click', async () => { await postJson('api/clip/deep-sleep/stop'); await refresh(); });
+    document.getElementById('liveStartBtn').addEventListener('click', async () => {
+      await postJson('api/clip/live/start', { display: document.getElementById('liveDisplaySelect').value });
+      await refresh();
+    });
+    document.getElementById('liveStopBtn').addEventListener('click', async () => { await postJson('api/clip/live/stop'); await refresh(); });
+    document.getElementById('refreshFilesBtn').addEventListener('click', async () => {
+      const res = await fetch('api/clip/files', { cache: 'no-store' });
+      const data = await res.json();
+      const files = Array.isArray(data.files) ? data.files : [];
+      onlineFilesBody.innerHTML = files.length
+        ? files.map((file) => `<tr><td>${file.name || '-'}</td><td>${file.lines ?? '-'}</td><td>${file.size ?? '-'}</td><td><button type="button" class="graf-link-button" data-file="${file.name || ''}">Download</button></td></tr>`).join('')
+        : '<tr><td colspan="4" class="empty-note">No online files available in fake mode.</td></tr>';
+      await refresh();
+    });
+    document.getElementById('deleteAllFilesBtn').addEventListener('click', async () => {
+      await postJson('api/clip/files/delete-all');
+      onlineFilesBody.innerHTML = '<tr><td colspan="4" class="empty-note">No online files available in fake mode.</td></tr>';
+      await refresh();
+    });
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>
+"""
+
+
+def _log(message: str) -> None:
+    print(f"[messkluppe-collector] {message}", flush=True)
+
+
+def _set_state(**updates: Any) -> None:
+    with _state_lock:
+        _state.update(updates)
+
+
+def _bump(name: str, inc: int = 1) -> None:
+    with _state_lock:
+        _state[name] = int(_state.get(name, 0)) + inc
+
+
+def _state_snapshot() -> dict[str, Any]:
+    with _state_lock:
+        snap = dict(_state)
+    snap["uptime_sec"] = round(time.time() - float(snap["started_at"]), 1)
+    snap["influx_configured"] = bool(INFLUX_TOKEN and INFLUX_ORG and INFLUX_BUCKET)
+    snap["ok"] = bool(snap["influx_configured"] and not snap.get("last_error"))
+    return snap
+
+
+def _command_result(action: str, *, accepted: bool, detail: str = "") -> dict[str, Any]:
+    payload = {
+        "action": action,
+        "accepted": accepted,
+        "detail": detail,
+        "real_radio_pending": not MESSKLUPPE_FAKE_MODE,
+        "ts": time.time(),
+    }
+    with _state_lock:
+        _state["last_command"] = payload
+        if not accepted:
+            _state["command_errors"] = int(_state.get("command_errors", 0)) + 1
+    return payload
+
+
+def _fake_accept(action: str) -> dict[str, Any]:
+    return _command_result(action, accepted=True, detail="accepted_in_fake_mode")
+
+
+def _not_implemented(action: str) -> dict[str, Any]:
+    return _command_result(action, accepted=False, detail="real_radio_mode_not_implemented")
+
+
+def _apply_control_action(action: str, updates: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    with _state_lock:
+        _state.update(updates)
+    result = _fake_accept(action) if MESSKLUPPE_FAKE_MODE else _not_implemented(action)
+    status = 200 if result["accepted"] else 501
+    return {"ok": result["accepted"], "command": result, "status": _state_snapshot()}, status
+
+
+def _json_payload() -> dict[str, Any]:
+    payload = request.get_json(silent=True)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _int_payload_value(payload: dict[str, Any], name: str, default: int, *, minimum: int = 0, maximum: int = 1_000_000) -> int:
+    try:
+        value = int(payload.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _ensure_influx_writer():
+    global _influx_client, _influx_write_api
+    if not (INFLUX_TOKEN and INFLUX_ORG and INFLUX_BUCKET):
+        _set_state(last_error="influx_not_configured")
+        return None
+    with _influx_lock:
+        if _influx_write_api is not None:
+            return _influx_write_api
+        try:
+            _influx_client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
+            _influx_write_api = _influx_client.write_api(write_options=SYNCHRONOUS)
+            _log("Influx writer initialized")
+            return _influx_write_api
+        except Exception as exc:
+            _set_state(last_error=f"influx_init_error: {exc}")
+            _bump("write_errors")
+            return None
+
+
+def _write_record(record: MesskluppeInfluxRecord) -> bool:
+    writer = _ensure_influx_writer()
+    if writer is None:
+        return False
+    try:
+        point = Point(record.measurement)
+        for key, value in record.tags.items():
+            point = point.tag(key, str(value))
+        for key, value in record.fields.items():
+            point = point.field(key, value)
+        if record.time_ns is not None:
+            point = point.time(record.time_ns, WritePrecision.NS)
+        writer.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point, write_precision=WritePrecision.NS)
+        _bump("records_written")
+        _set_state(last_write_at=time.time(), last_error="")
+        return True
+    except Exception as exc:
+        _set_state(last_error=f"influx_write_error: {exc}")
+        _bump("write_errors")
+        return False
+
+
+def _fake_payload(seq: int) -> bytes:
+    unix_time = int(time.time())
+    return words16_to_legacy_payload([
+        make_id_task(1, TASK_FILE_DOWNLOAD),
+        (unix_time >> 16) & 0xFFFF,
+        unix_time & 0xFFFF,
+        (seq >> 16) & 0xFFFF,
+        seq & 0xFFFF,
+        int(time.time() * 1000) % 1000,
+        2000 + (seq % 20),
+        2010 + (seq % 20),
+        2020 + (seq % 20),
+        0,
+        0,
+        900 + (seq % 360),
+        2500,
+        2600,
+        3700,
+        0,
+    ])
+
+
+def ingest_payload(payload: bytes, *, file_id: str | int | None = None) -> bool:
+    try:
+        packet = decode_file_data_packet(payload)
+        record = file_packet_to_influx_record(
+            packet,
+            measurement=MESSKLUPPE_MEASUREMENT,
+            source=MESSKLUPPE_SOURCE_TAG,
+            file_id=file_id,
+        )
+        _bump("packets_received")
+        _set_state(
+            last_packet_at=time.time(),
+            last_record={
+                "measurement": record.measurement,
+                "tags": record.tags,
+                "fields": {key: record.fields[key] for key in sorted(record.fields)[:16]},
+                "time_ns": record.time_ns,
+            },
+        )
+        return _write_record(record)
+    except Exception as exc:
+        _set_state(last_error=f"packet_parse_error: {exc}")
+        _bump("parse_errors")
+        return False
+
+
+def _fake_collector_loop() -> None:
+    _set_state(collector_running=True)
+    seq = 1
+    _log("fake collector loop started")
+    while not _stop_event.is_set():
+        ingest_payload(_fake_payload(seq), file_id="fake")
+        seq += 1
+        _stop_event.wait(MESSKLUPPE_FAKE_INTERVAL_SEC)
+    _set_state(collector_running=False)
+    _log("fake collector loop stopped")
+
+
+def _start_collector() -> None:
+    global _collector_thread
+    if _collector_thread is not None and _collector_thread.is_alive():
+        return
+    if not MESSKLUPPE_FAKE_MODE:
+        _set_state(last_error="real_radio_mode_not_implemented")
+        _log("real radio mode is not implemented yet")
+        return
+    _stop_event.clear()
+    _collector_thread = threading.Thread(target=_fake_collector_loop, daemon=True)
+    _collector_thread.start()
+
+
+def _stop_collector() -> None:
+    _stop_event.set()
+    if _collector_thread is not None and _collector_thread.is_alive():
+        _collector_thread.join(timeout=2.0)
+
+
+@app.route("/")
+def index():
+    return Response(INDEX_HTML.replace("__COMMON_CSS__", COMMON_CSS), mimetype="text/html")
+
+
+@app.route("/health")
+def health():
+    return jsonify({"ok": True, **_state_snapshot()})
+
+
+@app.route("/api/status")
+def api_status():
+    return jsonify(_state_snapshot())
+
+
+@app.route("/api/ingest-hex", methods=["POST"])
+def api_ingest_hex():
+    payload = request.get_json(silent=True) or {}
+    text = str(payload.get("payload_hex", "")).strip().replace(" ", "")
+    file_id = payload.get("file_id")
+    try:
+        raw = bytes.fromhex(text)
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid_hex"}), 400
+    ok = ingest_payload(raw, file_id=file_id)
+    return jsonify({"ok": ok, "status": _state_snapshot()})
+
+
+@app.route("/api/fake-once", methods=["POST"])
+def api_fake_once():
+    seq = int(time.time()) & 0xFFFF
+    ok = ingest_payload(_fake_payload(seq), file_id="fake")
+    return jsonify({"ok": ok, "status": _state_snapshot()})
+
+
+@app.route("/api/clip/start-logging", methods=["POST"])
+def api_clip_start_logging():
+    payload = _json_payload()
+    sample_rate = _int_payload_value(payload, "sample_rate", int(_state_snapshot().get("sample_rate", 2500)), minimum=1, maximum=100000)
+    logging_time = _int_payload_value(payload, "logging_time", int(_state_snapshot().get("logging_time", 100)), minimum=1, maximum=86400)
+    body, status = _apply_control_action(
+        "start_logging",
+        {
+            "clip_mode": "logging",
+            "clip_task": 20,
+            "logging": True,
+            "sample_rate": sample_rate,
+            "logging_time": logging_time,
+        },
+    )
+    return jsonify(body), status
+
+
+@app.route("/api/clip/stop-logging", methods=["POST"])
+def api_clip_stop_logging():
+    body, status = _apply_control_action("stop_logging", {"clip_mode": "idle", "clip_task": 0, "logging": False})
+    return jsonify(body), status
+
+
+@app.route("/api/clip/reset-mode", methods=["POST"])
+def api_clip_reset_mode():
+    body, status = _apply_control_action(
+        "reset_mode",
+        {
+            "clip_mode": "idle",
+            "clip_task": 0,
+            "logging": False,
+            "live_mode": False,
+        },
+    )
+    return jsonify(body), status
+
+
+@app.route("/api/clip/deep-sleep/start", methods=["POST"])
+def api_clip_deep_sleep_start():
+    body, status = _apply_control_action("start_deep_sleep", {"clip_mode": "deep_sleep", "clip_task": 10, "deep_sleep": True})
+    return jsonify(body), status
+
+
+@app.route("/api/clip/deep-sleep/stop", methods=["POST"])
+def api_clip_deep_sleep_stop():
+    body, status = _apply_control_action("stop_deep_sleep", {"clip_mode": "idle", "clip_task": 0, "deep_sleep": False})
+    return jsonify(body), status
+
+
+@app.route("/api/clip/live/start", methods=["POST"])
+def api_clip_live_start():
+    payload = _json_payload()
+    display = str(payload.get("display", _state_snapshot().get("live_display", "linearForce"))).strip() or "linearForce"
+    if display not in {"linearForce", "raw"}:
+        display = "linearForce"
+    body, status = _apply_control_action(
+        "start_live",
+        {
+            "clip_mode": "live",
+            "clip_task": 60,
+            "live_mode": True,
+            "live_display": display,
+        },
+    )
+    return jsonify(body), status
+
+
+@app.route("/api/clip/live/stop", methods=["POST"])
+def api_clip_live_stop():
+    body, status = _apply_control_action("stop_live", {"clip_mode": "idle", "clip_task": 0, "live_mode": False})
+    return jsonify(body), status
+
+
+@app.route("/api/clip/files", methods=["GET"])
+def api_clip_files():
+    result = _fake_accept("list_files") if MESSKLUPPE_FAKE_MODE else _not_implemented("list_files")
+    status = 200 if result["accepted"] else 501
+    return jsonify({"ok": result["accepted"], "command": result, "files": _state_snapshot().get("online_files", []), "status": _state_snapshot()}), status
+
+
+@app.route("/api/clip/files/download", methods=["POST"])
+def api_clip_file_download():
+    payload = _json_payload()
+    filename = str(payload.get("filename", "")).strip()
+    lines = _int_payload_value(payload, "lines", 0, minimum=0, maximum=10_000_000)
+    result = _fake_accept("download_file") if MESSKLUPPE_FAKE_MODE else _not_implemented("download_file")
+    status = 200 if result["accepted"] else 501
+    return jsonify({"ok": result["accepted"], "command": result, "filename": filename, "lines": lines, "status": _state_snapshot()}), status
+
+
+@app.route("/api/clip/files/delete", methods=["POST"])
+def api_clip_file_delete():
+    payload = _json_payload()
+    filename = str(payload.get("filename", "")).strip()
+    result = _fake_accept("delete_file") if MESSKLUPPE_FAKE_MODE else _not_implemented("delete_file")
+    status = 200 if result["accepted"] else 501
+    return jsonify({"ok": result["accepted"], "command": result, "filename": filename, "status": _state_snapshot()}), status
+
+
+@app.route("/api/clip/files/delete-all", methods=["POST"])
+def api_clip_files_delete_all():
+    with _state_lock:
+        _state["online_files"] = []
+    result = _fake_accept("delete_all_files") if MESSKLUPPE_FAKE_MODE else _not_implemented("delete_all_files")
+    status = 200 if result["accepted"] else 501
+    return jsonify({"ok": result["accepted"], "command": result, "status": _state_snapshot()}), status
+
+
+@app.route("/api/fake/start", methods=["POST"])
+def api_fake_start():
+    if not MESSKLUPPE_FAKE_MODE:
+        return jsonify({"ok": False, "error": "fake_mode_disabled", "status": _state_snapshot()}), 409
+    _start_collector()
+    return jsonify({"ok": True, "status": _state_snapshot()})
+
+
+@app.route("/api/fake/stop", methods=["POST"])
+def api_fake_stop():
+    _stop_collector()
+    return jsonify({"ok": True, "status": _state_snapshot()})
+
+
+if __name__ == "__main__":
+    _start_collector()
+    app.run(host="0.0.0.0", port=MESSKLUPPE_APP_PORT, debug=False)

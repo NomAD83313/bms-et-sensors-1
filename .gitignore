@@ -1,0 +1,46 @@
+# Claude Code
+.claude/
+.codex
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Env
+.env
+
+# OS
+.DS_Store
+.vscode/*
+.venv/*
+
+# Local docs/media
+*.pdf
+
+# Local test run artifacts
+tests/runs/
+
+# ESP-IDF local firmware artifacts
+eim_config.toml
+sensors/
+
+# CMake / IDE build cache
+build/
+
+
+# Local runtime state
+runtime/*
+!runtime/.gitkeep
+app/messkluppe/legacy_host/db.db
+app/messkluppe/legacy_host/static/_csv/*
+!app/messkluppe/legacy_host/static/_csv/.gitkeep
+
+# Hidden directories (except .gitignore, .gitkeep)
+/.*
+!/.gitignore
+!/.gitkeep
+!/.github
+!/.aiexclude

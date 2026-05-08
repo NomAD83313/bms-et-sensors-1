@@ -1,0 +1,585 @@
+# BMS ET Sensors Stack
+
+Docker stack for sensor data acquisition and visualization:
+- `mscl-collector`: MicroStrain MSCL node configuration + stream ingestion + web API.
+- `redlab-collector`: MCC RedLab thermocouple collector.
+- `almemo-collector`: ALMEMO serial integration.
+- `pyrometer-collector`: unified pyrometer app for thermoMETER CT and Optris CT devices.
+- `influxdb`: time-series storage.
+- `grafana`: dashboards.
+- `graf-lite`: lightweight Python dashboard for low-resource hosts.
+- `ap-control`: Raspberry Pi access point operator UI for AP state and connected clients.
+- `service-controller`: lightweight control API to start/stop selected service groups from dashboard; guards MSCL, RedLab, and ALMEMO hardware presence.
+- `dashboard`: lightweight start page based on `simple-dash`, served by `nginx`.
+- `matter-server`: Python Matter Server (Nabu Casa) for controlled Matter diagnostics and collection.
+- `matter-collector`: collector that bridges Matter events to InfluxDB.
+- `openthread-border-router`: Border Router for Thread mesh (requires OpenThread RCP, USB or network socket).
+- `messkluppe-collector`: legacy Messkluppe host-side collector scaffold; decodes nRF24 binary payloads and writes InfluxDB records, with fake mode available before node hardware is connected.
+
+The repository includes Matter/Thread stack documentation:
+
+- `docs/openthread.md`: OpenThread Border Router setup and hardware notes.
+- `docs/matter-thread-topology.md`: protocol-aligned Matter + OTBR topology model.
+
+ESP32/Matter/Thread node workspace is included in this repository under `nodes`.
+
+## Matter Server status
+
+`matter-server` commissioning is only stable in this project environment with a dedicated external USB BLE adapter.
+
+- Use the tested Realtek USB BLE dongle (`0bda:8771`, Bluetooth address `8C:88:2B:24:32:8F`) for commissioning.
+- Do not use the Raspberry Pi internal Cypress BLE adapter or the MediaTek Wi-Fi/AP combo BLE adapter for commissioning.
+- Start Matter services via `./scripts/restart-matter-server.sh` so the current `hciN` index is resolved from the hardcoded Realtek adapter identity before container recreation.
+- Do not restart `matter-server` with raw `docker restart`; that preserves the old `BLUETOOTH_ADAPTER` value after Linux renumbers HCI devices.
+- For fresh or factory-reset Thread devices, call `commission_with_code` with the `MT:...` QR payload and without `network_only`.
+  `network_only: true` disables BLE discovery and is only for devices already reachable on the IP network.
+
+Known BLE adapter policy:
+
+- Supported: external USB Realtek RTL8761BU (`0bda:8771`), verified with HAMA Smart Plug and ESP32-S-CAM commissioning.
+- Unsupported: Raspberry Pi internal Cypress/Broadcom BLE; it fails during BLE link establishment with HCI reason `0x3e`.
+- Unsupported: MediaTek `0e8d:7961` Wi-Fi/AP combo BLE; it is not suitable for Matter commissioning in this stack.
+- Host setup disables the internal Raspberry Pi Bluetooth at boot; keep Matter commissioning on the external Realtek dongle.
+
+## AI agent rules
+
+- `AGENTS.md` in the project root is the canonical rule file for Codex.
+- Keep Codex-specific project conventions and workflow constraints in `AGENTS.md`.
+- Keep the file concise enough to stay within Codex loading limits (current practical target: well below 32 KiB).
+
+## Release notes
+
+### v6.5.7
+
+- Matter commissioning now uses the hardcoded tested Realtek BLE adapter (`0bda:8771`, Bluetooth address `8C:88:2B:24:32:8F`) and resolves its current `hciN` before recreating `matter-server`.
+- Internal Cypress BLE and MediaTek Wi-Fi/AP combo BLE are documented as unsupported for commissioning after repeated HCI-level failures.
+- ESP32-S-CAM Matter firmware no longer forces a second commissioning window after startup.
+- Raspberry Pi AP, Matter primary interface, and AP UI defaults now target `wlan1`.
+
+### v6.5.0
+
+- Added `ap-control` at `/ap/` for Raspberry Pi AP control, connected-client inspection, signal/RX/TX metrics, and DHCP hostname display.
+- Dashboard section `Wlan / Matter / Thread` now links to `AP Control`.
+- Matter + Thread Console top navigation now includes a direct `Matter Graf 5m` shortcut to `/graf/matter?range=5m`.
+- Thread child association rules were simplified into a single ordered inference pass, preserving stable Pico matching for `rloc-only` OTBR children.
+
+### v6.4.4
+
+- Thread topology tree now shows colored Matter `node xx` badges for matched routers and children.
+- Router-child links can reuse RSSI/LQI from the router Matter NeighborTable, so children behind `BMS-C6CH-499B30` keep signal data even when OTBR meshdiag only reports LQI.
+- Upstream OTBR-router links now prefer the richest OTBR neighbor edge, preserving RSSI between the border router and the router when multiple evidence edges exist.
+- Quarantined child matching now ignores trusted sibling RLOC-only children under the same parent, keeping the Pico association stable after node re-pairing.
+
+### v6.4.3
+
+- Matter Thread topology now uses the new Matter Server + OTBR evidence model as the canonical `/thread-topology` endpoint.
+- Removed the legacy topology/debug endpoints and side-by-side UI comparison so the console shows a single inferred topology tree.
+- Added inferred matching for quarantined Matter Thread nodes using OTBR parent-child/router evidence while preserving duplicate reported-address warnings.
+
+### v4.1.0
+
+- `Sensor Info` now uses a compact ALMEMO fast overview sequence: `G00`, `Mxx`, `f2 P00`, `P32`.
+- Peak-related reads (`P02`, `P03`, `P28`, `P29`) were removed from the button path and documented as manual commands in the UI help.
+- No-live timing improved after the change, with the biggest gain on `Sensor Info` (`5.510s` -> `3.834s`).
+- The next large speed gains, if needed later, are more likely to come from serial-session mechanics than from changing ALMEMO read commands again.
+
+### v4.0.4
+
+- `almemo-collector` now executes multi-step interactive UI actions as a single guarded server-side batch via `/api/command-sequence`.
+- ALMEMO serial handling now sends explicit `XON` after buffer resets and after stream-to-command session rearm, preventing the observed V6 `XOFF` freeze / reconnect loop.
+- Tested UI flows no longer reproduced cable/device dropouts during `Print Cycle`, `Continuous Query`, `Sensor Info`, smoothing writes, and time/date writes.
+- Remaining known issue: response time is still noticeably slower while live data streaming is active; without live data the same ALMEMO actions are significantly faster.
+- After rebuilding `almemo-collector`, use a hard browser refresh so the updated `ui.js` is loaded.
+
+## Requirements
+
+- Docker Engine with Docker Compose plugin.
+- Linux host with access to sensor USB devices (`/dev` mount is used by containers).
+- Optional for local Python-side tests: `python3-venv`
+
+## Quick start
+
+1. Create local env file:
+
+```bash
+cp .env.example .env
+```
+
+2. Adjust secrets and network values in `.env`.
+
+3. Start stack:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
+```
+
+4. Open services:
+- MSCL web UI/API: `http://<host>/mscl/`
+- Pyrometer UI/API: `http://<host>/pyrometer/`
+- InfluxDB: `http://<host>:8086`
+- Grafana: `http://<host>/grafana/`
+- Graf App Lite: `http://<host>/graf/`
+- Matter + Thread Console: `http://<host>/matter/`
+- Matter Graf (5m shortcut): `http://<host>/graf/matter?range=5m`
+- Messkluppe Graf (5m shortcut): `http://<host>/graf/messkluppe?range=5m`
+- Messkluppe collector (profile `messkluppe`): `http://<host>:3080`
+- Messkluppe collector via dashboard proxy: `http://<host>/messkluppe/`
+- Dashboard: `http://<host>:80`
+- AP Control: `http://<host>/ap/`
+- System health page: `http://<host>/health.html`
+- Service control API (internal, via dashboard proxy): `http://<host>/api/control/*`
+- Optional local DNS alias for AP clients: `http://<ap-local-name>`
+
+## Install-time vs runtime files
+
+Rule for this repository:
+- GitHub should contain only install-time files needed to bootstrap the stack.
+- Runtime state generated by containers must stay local and must not be committed.
+
+Tracked install-time templates:
+- `.env.example`
+
+Local runtime files created from templates when missing:
+- `.env`
+
+Other local runtime/state artifacts that stay out of Git:
+- `runtime/`
+
+OpenThread note:
+- `OTBR_IMAGE` in `.env` / `.env.example` pins the known-good `openthread/otbr:jammy` digest for this stack.
+- That pinned image keeps its active Thread dataset under `/var/lib/thread` inside the container, and this stack persists that state under `runtime/openthread/thread/`.
+
+Checklist for any new service or config file:
+- If the file is required to bootstrap a fresh install, track a template or default version in Git.
+- If the file is changed by a running container or stores local secrets/state, keep it local and ignore it in Git.
+- Prefer `*.example` for install-time templates and create the local runtime file from that template in setup/restart scripts.
+- Keep runtime databases, logs, backups, caches and generated UI settings out of the repository.
+- When adding a new mounted config path in `docker-compose.yml`, decide immediately whether it is install-time or runtime and update `.gitignore` and setup scripts in the same change.
+
+## Start commands
+
+- Full local rebuild + restart (all custom app services):
+
+```bash
+./scripts/restart-local.sh
+```
+
+- Start Matter & Thread profile:
+
+```bash
+./scripts/restart-openthread.sh
+./scripts/restart-matter-server.sh
+```
+
+Note:
+- RedLab recovery lives inside `service-controller`:
+  - detects the MCC USB-TC by USB vendor/product ID instead of serial number
+  - keeps `redlab-collector` stopped while the USB-TC is absent
+  - starts `redlab-collector` only after the USB device is present and stable
+  - any compatible `MCC USB-TC` with the configured USB IDs will be picked up automatically
+- MSCL recovery also lives inside `service-controller`:
+  - keeps `mscl-collector` stopped while the configured MSCL base serial path is absent
+  - starts `mscl-collector` only after the MSCL serial path is present and stable
+  - uses `MSCL_PORT` first, then falls back to a `WSDA-Base-200` path in `/dev/serial/by-id`
+- Matter commissioning uses only the hardcoded Realtek USB BLE adapter (`0bda:8771`, Bluetooth address `8C:88:2B:24:32:8F`).
+  - Internal BLE fallback is disabled by design.
+  - Start Matter services via `./scripts/restart-matter-server.sh` so the current `hciN` index is resolved before container recreation.
+
+- Build/restart all custom app services:
+
+```bash
+./scripts/build-local-all.sh
+```
+
+- Build/restart only MSCL:
+
+```bash
+./scripts/build-local-mscl.sh
+```
+
+- Build/restart only RedLab:
+
+```bash
+./scripts/build-local-redlab.sh
+```
+
+- Build/restart only Graf App Lite:
+
+```bash
+./scripts/build-local-graf-app.sh
+```
+
+- Build/restart only AP Control:
+
+```bash
+./scripts/build-local-ap-ui.sh
+```
+
+Note:
+- this script rebuilds `ap-control`, restarts it, and then restarts `dashboard` so the `/ap/` nginx route is reloaded immediately.
+
+- Build/restart only ALMEMO:
+
+```bash
+./scripts/build-local-almemo.sh
+```
+
+- Build/restart only Messkluppe collector:
+
+```bash
+./scripts/build-local-messkluppe.sh
+```
+
+- Build/restart only thermoMETER CT:
+
+```bash
+./scripts/build-local-pyrometers.sh
+```
+
+- Configure persistent USB aliases/rules for Micro-Epsilon thermoMETER CT and Optris:
+
+```bash
+sudo ./scripts/pyrometers-setup.sh
+```
+
+Pyrometer runtime modes are configured per host in `runtime/pyrometers-devices.json`.
+Use `config/pyrometers-devices.example.json` only as the tracked template:
+- `mode: "poll"` sends `0x01` and reads a two-byte temperature response. This is the safest fallback.
+- `mode: "stream"` passively listens for the existing marked binary stream (`AA AA` + 4 words).
+- `mode: "burst"` starts configured burst output from the app. Use `burst_command_set: "classic_ct"` with `stream_frame_format: "marked_aaaa"` for CT-style marked streams, or the default Optris CTi command set with `stream_frame_format: "burst_words"` for unmarked word bursts.
+- Useful burst fields are `burst_command_set`, `stream_frame_format`, `burst_interval_ms`, and `burst_channels` such as `["target", "head", "box", "target"]` for classic CT marked bursts.
+- Advanced devices can override generated burst control with `stream_start_hex` and `stream_stop_hex` arrays of raw hex commands.
+
+- Build/restart only Service Control API:
+
+```bash
+./scripts/build-local-svcctl.sh
+```
+
+- Build/restart only Matter collector UI/API:
+
+```bash
+./scripts/build-local-matter-app.sh
+```
+
+This rebuilds `matter-collector` only and does not touch `matter-server`; use
+`./scripts/restart-matter-server.sh` for Matter Server so the Realtek BLE
+adapter is re-detected first.
+
+- Fast MSCL restart in dev mode (bind-mounted `./app/mscl`):
+
+```bash
+./scripts/restart-mscl-dev.sh
+```
+
+- Build and push Docker Hub images for `arm64` only.
+  Run on a native `arm64` host, without cross-compilation:
+
+```bash
+./scripts/build-push-arm64.sh
+```
+
+- Backward-compatible wrapper for the old publish command:
+
+```bash
+./scripts/build-push-multiarch.sh
+```
+
+- Local native build on `x64` host (no cross-compilation):
+
+```bash
+./scripts/build-local-x64-all.sh
+```
+
+- Raspberry Pi full setup (with local build):
+
+```bash
+./scripts/rpi-setup.sh
+```
+
+Optional env flags for full Raspberry Pi setup:
+- `RPI_SETUP_ENABLE_PYROMETERS=1` keeps `pyrometer-collector` in the stack
+- `RPI_SETUP_RUN_PYROMETERS_SETUP=1` applies the pyrometer registry to udev before build/start
+
+- Raspberry Pi ordered setup wrappers:
+
+```bash
+./scripts/01-rpi-setup.sh
+./scripts/02-rpi-nm-ap.sh
+```
+
+## Dev workflow (mscl-collector)
+
+- The MSCL container now bind-mounts code from host: `./app/mscl:/app` (see `docker-compose.override.yml`).
+- `Flask reloader` is intentionally disabled, so runtime remains stable.
+- If you change only MSCL code/assets (`*.py`, `*.js`, `*.html`) in `app/mscl`, rebuild is not required:
+
+```bash
+./scripts/restart-mscl-dev.sh
+```
+
+- Rebuild `mscl-collector` only when dependencies/image inputs changed:
+- `Dockerfile.mscl`
+- `app/mscl/requirements.txt`
+- system packages / base image assumptions
+
+```bash
+./scripts/build-local-mscl.sh
+```
+
+## Environment variables
+
+Use `.env.example` as the baseline. Key variables:
+
+### InfluxDB / Grafana
+- `INFLUX_ORG`
+- `INFLUX_BUCKET`
+- `INFLUX_TOKEN`
+- `INFLUX_ADMIN_PASSWORD`
+- `GRAFANA_ADMIN_PASSWORD`
+- `GRAF_APP_DEFAULT_RANGE`
+- `GRAF_APP_REFRESH_SEC`
+
+Current default RedLab USB identity:
+- vendor `09db`
+- product `0090`
+- device family `MCC USB-TC`
+- `service-controller` starts `redlab-collector` only after USB presence is stable
+- `redlab-collector` applies a short startup warm-up and bootstrap review after reconnect
+- `service-controller` starts `mscl-collector` only after the MSCL base serial path is present and stable
+- only channels selected in Graf App Lite are written to Influx
+
+### MSCL app (optional advanced tuning)
+The app also supports runtime tuning via env variables (batch sizes, queue limits, stream cadence, offsets). Defaults are defined in `app/mscl/mscl_settings.py`.
+
+Shared source tags (used by both `mscl-collector` and `graf-lite`):
+- `mscl_sensors`
+- `mscl_config_stream`
+- `mscl_node_export`
+
+Shared InfluxDB tag style:
+- `device` is the primary device identity tag for all sensor measurements.
+- `channel` is used only for multi-channel devices.
+- `source` is used only when one device/measurement has multiple producer streams.
+- Additional tags such as `mode`, `unit`, and `sensor` are measurement-specific metadata.
+
+### Raspberry Pi AP helper
+- `AP_NAME`
+- `AP_SSID`
+- `AP_PASSWORD`
+- `AP_BAND`
+- `AP_CHANNEL`
+- `AP_LOCAL_DNS_ENABLE`
+- `AP_LOCAL_DNS_NAME`
+
+### Removed legacy env variables
+These keys are now hard-coded inside the stack and should not be added back to `.env` unless the code changes:
+- `INFLUX_URL`
+- `GRAFANA_ROOT_URL`
+- `MQTT_PORT`
+- `TZ`
+- `GRAF_APP_MSCL_CHANNEL`
+- `GRAF_APP_REDLAB_MEASUREMENT`
+- `TEMP_MIN`
+- `REDLAB_HEALTH_PORT`
+- `MSCL_MEASUREMENT`
+- `MSCL_SOURCE_RADIO_TAG`
+- `MSCL_SOURCE_NODE_EXPORT_TAG`
+- `SVCCTL_REDLAB_GUARD_ENABLED`
+- `SVCCTL_REDLAB_GUARD_INTERVAL_SEC`
+- `SVCCTL_REDLAB_USB_VENDOR_ID`
+- `SVCCTL_REDLAB_USB_PRODUCT_ID`
+- `SVCCTL_REDLAB_USB_STABLE_SEC`
+
+These older removed keys are not used by the current stack:
+- `GRAFANA_ACCESS_ADDRESS`
+- `GRAF_APP_PORT`
+
+## Containers and addresses
+
+| Container | Local address | Docker Hub | GitHub |
+|---|---|---|---|
+| `dashboard` | `http://<host>:80` | `https://hub.docker.com/_/nginx` | `https://github.com/nginx/nginx` |
+| `grafana` | `http://<host>/grafana/` | `https://hub.docker.com/r/grafana/grafana-oss` | `https://github.com/grafana/grafana` |
+| `graf-lite` | `http://<host>/graf/` | `https://hub.docker.com/r/nomad375/bms-graf-lite` | `https://github.com/nomad375/bms-et-sensors` |
+| `ap-control` | `http://<host>/ap/` | `https://hub.docker.com/r/nomad375/bms-ap-control` | `https://github.com/nomad375/bms-et-sensors` |
+| `service-controller` | internal only (`/api/control/*` via dashboard) | `https://hub.docker.com/r/nomad375/bms-service-controller` | `https://github.com/nomad375/bms-et-sensors` |
+| `influxdb` | `http://<host>:8086` | `https://hub.docker.com/_/influxdb` | `https://github.com/influxdata/influxdb` |
+| `mscl-collector` | `http://<host>/mscl/` | `https://hub.docker.com/r/nomad375/bms-mscl-collector` | `https://github.com/nomad375/bms-et-sensors` |
+| `redlab-collector` | no host port (internal writer) | `https://hub.docker.com/r/nomad375/bms-redlab-collector` | `https://github.com/nomad375/bms-et-sensors` |
+| `almemo-collector` | `http://<host>/almemo/` | `https://hub.docker.com/r/nomad375/bms-almemo-collector` | `https://github.com/nomad375/bms-et-sensors` |
+| `pyrometer-collector` | `http://<host>/pyrometer/` | `https://hub.docker.com/r/nomad375/bms-pyrometer-collector` | `https://github.com/nomad375/bms-et-sensors` |
+| `matter-collector` | `http://<host>/matter/` | `https://hub.docker.com/r/nomad375/bms-matter-collector` | `https://github.com/nomad375/bms-et-sensors` |
+
+## Logs and diagnostics
+
+- Follow all container logs:
+
+```bash
+./scripts/logs.sh
+```
+
+- Follow one service:
+
+```bash
+./scripts/logs.sh mscl-collector
+```
+
+- MSCL API health:
+
+```bash
+curl -s http://localhost:5000/api/health
+```
+
+- MSCL API metrics:
+
+```bash
+curl -s http://localhost:5000/api/metrics
+```
+
+### Raspberry Pi AP local DNS alias
+
+- `scripts/rpi-nm-ap.sh` configures `NetworkManager + dnsmasq` alias on AP subnet.
+- Numbered wrapper: `scripts/02-rpi-nm-ap.sh`
+- Alias is controlled by env vars:
+- `AP_LOCAL_DNS_ENABLE=true`
+- `AP_LOCAL_DNS_NAME=rpi5.internal`
+- AP clients can open:
+- `http://rpi5.internal`
+- Apply/reapply:
+```bash
+./scripts/rpi-nm-ap.sh
+```
+
+Quick check after AP connect:
+
+- On Raspberry Pi:
+```bash
+cat /etc/NetworkManager/conf.d/99-bms-dns.conf
+cat /etc/NetworkManager/dnsmasq.d/99-bms-ap-local.conf
+getent hosts rpi5.internal
+```
+
+- On Linux client:
+```bash
+getent hosts rpi5.internal
+ping -c 3 rpi5.internal
+```
+
+- On Windows client (PowerShell):
+```powershell
+Resolve-DnsName rpi5.internal
+ping rpi5.internal
+```
+
+### Dashboard (simple-dash + nginx)
+
+- Service: `dashboard` (`nginx:latest`)
+- Files served from: `dashboard/simple-dash`
+- Primary config file: `dashboard/simple-dash/config.json`
+- Port mapping: `${DASHBOARD_PORT:-80}:80`
+- `{{host}}` placeholder is supported in links and resolves to `window.location.hostname`
+- Health page can control service groups (`redlab`, `mscl`, `almemo`, `pyrometer`, `messkluppe`, `grafana`) through `/api/control/*`
+- Control does not require a token; access is currently gated only by network reachability to the dashboard
+
+`simple-dash` upstream:
+- https://github.com/wiesner-philipp/simple-dash
+
+## Safe cleanup
+
+Cleanup script is project-scoped and does not remove unrelated Docker resources.
+
+- Default stack cleanup:
+
+```bash
+./scripts/clean-docker.sh
+```
+
+- Docker Hub tag cleanup (keep only selected tags, default is `latest`):
+
+```bash
+DOCKERHUB_USER=<user> DOCKERHUB_PASS=<token_or_password> DOCKERHUB_NS=nomad375 DRY_RUN=1 ./scripts/cleanup-dockerhub-tags.sh
+```
+
+Then run with `DRY_RUN=0` after reviewing the printed delete plan.
+
+## Recovery procedures
+
+### 1) Base station or node stopped responding
+1. Check mscl logs: `./scripts/logs.sh mscl-collector`
+2. Trigger reconnect:
+```bash
+curl -X POST http://localhost:5000/api/reconnect
+```
+3. If needed, restart mscl container:
+```bash
+docker compose restart mscl-collector
+```
+
+### 2) InfluxDB write problems
+1. Verify Influx container is healthy:
+```bash
+docker compose ps
+```
+2. Check token/org/bucket values in `.env`.
+3. Restart writer containers:
+```bash
+docker compose restart mscl-collector redlab-collector
+```
+
+## Testing
+
+Project tests are `unittest`-based:
+
+```bash
+python -m unittest discover -s tests -q
+```
+
+For easier local test runs outside containers, bootstrap a local virtualenv once:
+
+```bash
+./scripts/setup-local-python.sh
+```
+
+Then run tests through it:
+
+```bash
+./scripts/test-local.sh
+```
+
+Or run a single test module:
+
+```bash
+./scripts/test-local.sh tests.test_matter_thread_topology
+```
+
+Note:
+- `requirements-dev.txt` intentionally covers the common Python test/import dependencies used by local Flask services.
+- Hardware/vendor-specific runtime packages such as `uldaq` are not included there, because they are typically validated through container/service flows on the target host.
+
+## Sampling Validation Snapshot
+
+Validation run on February 13, 2026:
+- Run artifacts: `tests/runs/20260213-193644/`
+- Node: `16904` (`TC-Link-200`)
+- Observed LPF options from node read: `294 Hz` only
+
+### Validated LPF × Sample Rate combinations
+
+| Low Pass Filter | Sample Rate | Test | Result |
+|---|---|---|---|
+| 294 Hz | 1 Hz (`113`) | start/stop, 90s | PASS |
+| 294 Hz | 2 Hz (`112`) | start/stop, 90s | PASS |
+| 294 Hz | 4 Hz (`111`) | start/stop, 90s | PASS |
+| 294 Hz | 8 Hz (`110`) | start/stop, 90s | PASS |
+| 294 Hz | 16 Hz (`109`) | start/stop, 90s | PASS |
+| 294 Hz | 64 Hz (`107`) | stability run, 300s | PASS |
+
+Additional idle/read/health checks:
+- Idle stability run: 150s
+- API errors: none
+- Read failures: none
+
+Notes:
+- Results above are node/firmware-specific and should be treated as a validated snapshot.
+- If firmware exposes additional LPF values later, repeat the same validation procedure before using new combinations in production.

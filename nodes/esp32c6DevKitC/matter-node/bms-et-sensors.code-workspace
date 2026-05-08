@@ -1,0 +1,49 @@
+{
+  "folders": [
+    {
+      "name": "bms-et-sensors",
+      "path": "."
+    }
+  ],
+  "settings": {
+    "terminal.integrated.cwd": "${workspaceFolder:bms-et-sensors}",
+    "python.testing.unittestEnabled": true,
+    "python.testing.pytestEnabled": false,
+    "python.testing.unittestArgs": [
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests",
+      "-q"
+    ],
+    "files.exclude": {
+      "**/.idf": true,
+      "**/build": true,
+      "**/managed_components": true
+    },
+    "search.exclude": {
+      "**/.idf": true,
+      "**/build": true,
+      "**/managed_components": true
+    },
+    "files.watcherExclude": {
+      "**/.idf/**": true,
+      "**/build/**": true,
+      "**/managed_components/**": true
+    }
+  },
+  "extensions": {
+    "unwantedRecommendations": [
+      "espressif.esp-idf-extension"
+    ]
+  },
+  "tasks": {
+    "version": "2.0.0",
+    "tasks": []
+  },
+  "launch": {
+    "version": "0.2.0",
+    "configurations": []
+  }
+}
