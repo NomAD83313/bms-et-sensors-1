@@ -64,7 +64,8 @@ HTTP endpoints:
 - `POST /api/mock-node/stop`: stop the mock node packet loop.
 - `POST /api/fake-once`, `POST /api/fake/start`, and `POST /api/fake/stop`: compatibility aliases for the mock node endpoints.
 - `POST /api/ingest-hex`: ingest one 32-byte legacy payload as hex, useful for replay tests.
-- In radio mode, startup begins the RX loop automatically. `GET /api/status` exposes `radio_listening`, `radio_rx_ready`, `radio_rx_packets`, `radio_rx_empty_reads`, `radio_rx_last_at`, and `radio_rx_last_error`.
+- `GET /api/radio/recent-payloads`: returns the in-memory recent raw radio payload ring buffer as hex.
+- In radio mode, startup begins the RX loop automatically. `GET /api/status` exposes `radio_listening`, `radio_rx_ready`, `radio_rx_packets`, `radio_rx_empty_reads`, `radio_rx_last_at`, `radio_rx_last_payload_hex`, `radio_rx_recent_payloads`, `radio_rx_parse_errors`, and `radio_rx_last_error`.
 
 Legacy-compatible control API skeleton:
 
@@ -91,6 +92,7 @@ Relevant environment variables:
 - `MESSKLUPPE_FAKE_MODE` default `1`.
 - `MESSKLUPPE_FAKE_INTERVAL_SEC` default `5.0`.
 - `MESSKLUPPE_RADIO_POLL_SEC` default `0.05`.
+- `MESSKLUPPE_RADIO_RECENT_PAYLOADS` default `10`.
 - `MESSKLUPPE_INFLUX_MEASUREMENT` default `messkluppe_sensor`.
 - `MESSKLUPPE_SOURCE_TAG` default `messkluppe`.
 - `MESSKLUPPE_RADIO_SPI_BUS` default `0`.
@@ -112,6 +114,9 @@ Radio RX telemetry:
 - `radio_rx_packets`: payloads read from nRF24 RX FIFO.
 - `radio_rx_empty_reads`: polls where RX FIFO was empty.
 - `radio_rx_last_at`: last payload timestamp.
+- `radio_rx_last_payload_hex`: last raw 32-byte payload as hex.
+- `radio_rx_recent_payloads`: recent raw payload ring buffer kept in memory only.
+- `radio_rx_parse_errors`: radio payloads that reached the decoder but failed parsing.
 - `radio_rx_last_error`: last runtime RX error, if any.
 
 ## Visualization

@@ -142,6 +142,52 @@ class MesskluppeAppControlTests(unittest.TestCase):
         self.assertIn("radio_rx_packets", payload)
         self.assertIn("radio_rx_empty_reads", payload)
         self.assertIn("radio_rx_last_error", payload)
+        self.assertIn("radio_rx_last_payload_hex", payload)
+        self.assertIn("radio_rx_recent_payloads", payload)
+
+    def test_radio_recent_payloads_endpoint_returns_ring_buffer(self):
+        with messkluppe_app._state_lock:
+            old_values = {
+                key: messkluppe_app._state.get(key)
+                for key in ("radio_rx_recent_payloads", "radio_rx_last_payload_hex")
+            }
+            messkluppe_app._state.update(
+                radio_rx_recent_payloads=[
+                    {"ts": 1.0, "payload_hex": "00", "size": 1, "ok": True, "error": ""},
+                    {"ts": 2.0, "payload_hex": "0102", "size": 2, "ok": False, "error": "decode"},
+                ],
+                radio_rx_last_payload_hex="0102",
+            )
+        try:
+            response = self.client.get("/api/radio/recent-payloads")
+        finally:
+            with messkluppe_app._state_lock:
+                messkluppe_app._state.update(old_values)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["count"], 2)
+        self.assertEqual(payload["last_payload_hex"], "0102")
+        self.assertEqual(payload["payloads"][1]["error"], "decode")
+
+    def test_remember_radio_payload_keeps_bounded_recent_payloads(self):
+        with messkluppe_app._state_lock:
+            old_values = {
+                key: messkluppe_app._state.get(key)
+                for key in ("radio_rx_recent_payloads", "radio_rx_last_payload_hex", "radio_rx_last_at")
+            }
+            messkluppe_app._state.update(radio_rx_recent_payloads=[], radio_rx_last_payload_hex="", radio_rx_last_at=None)
+        try:
+            for value in range(messkluppe_app.MESSKLUPPE_RADIO_RECENT_PAYLOADS + 2):
+                messkluppe_app._remember_radio_payload(bytes([value]))
+            snap = messkluppe_app._state_snapshot()
+        finally:
+            with messkluppe_app._state_lock:
+                messkluppe_app._state.update(old_values)
+
+        self.assertEqual(len(snap["radio_rx_recent_payloads"]), messkluppe_app.MESSKLUPPE_RADIO_RECENT_PAYLOADS)
+        self.assertEqual(snap["radio_rx_last_payload_hex"], f"{messkluppe_app.MESSKLUPPE_RADIO_RECENT_PAYLOADS + 1:02x}")
 
 
 if __name__ == "__main__":

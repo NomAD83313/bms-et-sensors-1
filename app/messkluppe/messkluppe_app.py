@@ -31,6 +31,7 @@ if MESSKLUPPE_INPUT_MODE not in {"mock", "radio", "disabled"}:
     MESSKLUPPE_INPUT_MODE = "mock" if MESSKLUPPE_FAKE_MODE else "disabled"
 MESSKLUPPE_FAKE_INTERVAL_SEC = float(os.getenv("MESSKLUPPE_FAKE_INTERVAL_SEC", "5.0"))
 MESSKLUPPE_RADIO_POLL_SEC = float(os.getenv("MESSKLUPPE_RADIO_POLL_SEC", "0.05"))
+MESSKLUPPE_RADIO_RECENT_PAYLOADS = max(1, int(os.getenv("MESSKLUPPE_RADIO_RECENT_PAYLOADS", "10")))
 MESSKLUPPE_MEASUREMENT = os.getenv("MESSKLUPPE_INFLUX_MEASUREMENT", DEFAULT_MEASUREMENT).strip() or DEFAULT_MEASUREMENT
 MESSKLUPPE_SOURCE_TAG = os.getenv("MESSKLUPPE_SOURCE_TAG", "messkluppe").strip() or "messkluppe"
 INFLUX_URL = os.getenv("INFLUX_URL", "http://influxdb:8086").strip()
@@ -76,6 +77,9 @@ _state: dict[str, Any] = {
     "radio_rx_errors": 0,
     "radio_rx_last_at": None,
     "radio_rx_last_error": "",
+    "radio_rx_last_payload_hex": "",
+    "radio_rx_recent_payloads": [],
+    "radio_rx_parse_errors": 0,
     "radio_runtime": None,
     "packets_received": 0,
     "records_written": 0,
@@ -294,6 +298,8 @@ __COMMON_CSS__
         ['Radio RX packets', data.radio_rx_packets ?? 0],
         ['Radio empty reads', data.radio_rx_empty_reads ?? 0],
         ['Radio last RX', fmtTime(data.radio_rx_last_at)],
+        ['Radio last payload', data.radio_rx_last_payload_hex || '-'],
+        ['Radio parse errors', data.radio_rx_parse_errors ?? 0],
         ['Radio error', data.radio_rx_last_error || '-'],
         ['Influx configured', data.influx_configured ? 'yes' : 'no'],
         ['Last packet', fmtTime(data.last_packet_at)],
@@ -400,6 +406,31 @@ def _set_state(**updates: Any) -> None:
 def _bump(name: str, inc: int = 1) -> None:
     with _state_lock:
         _state[name] = int(_state.get(name, 0)) + inc
+
+
+def _remember_radio_payload(payload: bytes, *, ok: bool | None = None, error: str = "") -> None:
+    now = time.time()
+    item = {
+        "ts": now,
+        "payload_hex": payload.hex(),
+        "size": len(payload),
+        "ok": ok,
+        "error": error,
+    }
+    with _state_lock:
+        recent = list(_state.get("radio_rx_recent_payloads") or [])
+        recent.append(item)
+        _state["radio_rx_recent_payloads"] = recent[-MESSKLUPPE_RADIO_RECENT_PAYLOADS:]
+        _state["radio_rx_last_payload_hex"] = item["payload_hex"]
+        _state["radio_rx_last_at"] = now
+
+
+def _mark_last_radio_payload_result(*, ok: bool, error: str = "") -> None:
+    with _state_lock:
+        recent = list(_state.get("radio_rx_recent_payloads") or [])
+        if recent:
+            recent[-1] = {**recent[-1], "ok": ok, "error": error}
+            _state["radio_rx_recent_payloads"] = recent
 
 
 def _state_snapshot() -> dict[str, Any]:
@@ -515,10 +546,16 @@ def ingest_payload(payload: bytes, *, file_id: str | int | None = None) -> bool:
                 "time_ns": record.time_ns,
             },
         )
-        return _write_record(record)
+        written = _write_record(record)
+        if file_id == "radio":
+            _mark_last_radio_payload_result(ok=written, error="" if written else "write_failed")
+        return written
     except Exception as exc:
         _set_state(last_error=f"packet_parse_error: {exc}")
         _bump("parse_errors")
+        if file_id == "radio":
+            _bump("radio_rx_parse_errors")
+            _mark_last_radio_payload_result(ok=False, error=str(exc))
         return False
 
 
@@ -557,7 +594,8 @@ def _radio_collector_loop() -> None:
                         _stop_event.wait(poll_sec)
                         continue
                     _bump("radio_rx_packets")
-                    _set_state(radio_rx_last_at=time.time(), radio_rx_last_error="")
+                    _remember_radio_payload(payload)
+                    _set_state(radio_rx_last_error="")
                     ingest_payload(payload, file_id="radio")
                 except Exception as exc:
                     _bump("radio_rx_errors")
@@ -630,6 +668,8 @@ def api_radio_diagnose():
                 "rx_packets": snap.get("radio_rx_packets", 0),
                 "rx_empty_reads": snap.get("radio_rx_empty_reads", 0),
                 "last_rx_at": snap.get("radio_rx_last_at"),
+                "last_payload_hex": snap.get("radio_rx_last_payload_hex"),
+                "rx_parse_errors": snap.get("radio_rx_parse_errors", 0),
             },
             "duration_ms": 0.0,
             "error": snap.get("radio_rx_last_error") or "",
@@ -653,6 +693,20 @@ def api_ingest_hex():
         return jsonify({"ok": False, "error": "invalid_hex"}), 400
     ok = ingest_payload(raw, file_id=file_id)
     return jsonify({"ok": ok, "status": _state_snapshot()})
+
+
+@app.route("/api/radio/recent-payloads", methods=["GET"])
+def api_radio_recent_payloads():
+    snap = _state_snapshot()
+    return jsonify(
+        {
+            "ok": True,
+            "payloads": snap.get("radio_rx_recent_payloads", []),
+            "last_payload_hex": snap.get("radio_rx_last_payload_hex", ""),
+            "count": len(snap.get("radio_rx_recent_payloads", [])),
+            "max_count": MESSKLUPPE_RADIO_RECENT_PAYLOADS,
+        }
+    )
 
 
 @app.route("/api/fake-once", methods=["POST"])
