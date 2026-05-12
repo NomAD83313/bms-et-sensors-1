@@ -194,7 +194,11 @@ function lineStyleForSeries(name, deviceOrder = []) {
 function prettySeriesName(rawName) {
   const name = String(rawName || "").trim();
   if (!name) return "";
-  if (name.includes("_field=object_temperature_c")) return prettyPyrometerName(name);
+  if (name.includes("_field=object_temperature_c")
+      || name.includes("_field=sensor_head_temperature_c")
+      || name.includes("_field=controller_box_temperature_c")) {
+    return prettyPyrometerName(name);
+  }
   if (name.includes("_field=force_") && name.includes("clip_id=")) return prettyMesskluppeName(name);
   if (name.includes("source=matter-server") && name.includes("node_id=")) {
     const { node_id: nodeId = "", endpoint_id: endpointId = "" } = parseSeriesTags(name);
@@ -229,18 +233,15 @@ function shortRedlabDeviceName(device) {
 }
 
 function prettyPyrometerName(rawName) {
-  const { device = "", source = "" } = parseSeriesTags(rawName);
-  const raw = device || source || "";
-  const knownNames = {
-    thermoMETER_CT: "thermoMETER CT",
-    OPTRIS_CT: "Optris CT"
+  const { source = "", serial = "", _field: field = "" } = parseSeriesTags(rawName);
+  const fieldLabels = {
+    object_temperature_c: "TObj",
+    sensor_head_temperature_c: "THead",
+    controller_box_temperature_c: "TBox"
   };
-  if (knownNames[raw]) return knownNames[raw];
-  const cleaned = raw
-    .replace(/^pyrometers[_-]*/i, "")
-    .replace(/_/g, " ")
-    .trim();
-  return cleaned || "Pyrometer";
+  const serialLabel = serial || source || "Pyrometer";
+  const label = fieldLabels[field] || "";
+  return [serialLabel, label].filter(Boolean).join(" ");
 }
 
 function prettyMesskluppeName(rawName) {

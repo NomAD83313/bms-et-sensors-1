@@ -17,6 +17,20 @@ function fmtHz(value) {
   return value.toFixed(2);
 }
 
+function fmtFactor(value) {
+  if (value === null || value === undefined || value === '') return '';
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return '';
+  return parsed.toFixed(3);
+}
+
+function fmtTemperatureInput(value) {
+  if (value === null || value === undefined || value === '') return '';
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return '';
+  return parsed.toFixed(1);
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -106,6 +120,9 @@ function renderHealth(health) {
     document.getElementById('headValue').textContent = '--.- °C';
     document.getElementById('boxValue').textContent = '--.- °C';
     document.getElementById('objectValue').textContent = '--.- °C';
+    document.getElementById('emissivityInput').value = '';
+    document.getElementById('transmissivityInput').value = '';
+    document.getElementById('ambientFixedInput').value = '';
     document.getElementById('metaPort').textContent = '-';
     document.getElementById('metaConnection').textContent = 'No configured device profiles.';
     document.getElementById('metaInput').textContent = '-';
@@ -127,6 +144,22 @@ function renderHealth(health) {
   document.getElementById('headValue').textContent = fmtValue(device.sensor_head_temperature_c);
   document.getElementById('boxValue').textContent = fmtValue(device.controller_box_temperature_c);
   document.getElementById('objectValue').textContent = fmtValue(device.object_temperature_c);
+  const emissivityInput = document.getElementById('emissivityInput');
+  const transmissivityInput = document.getElementById('transmissivityInput');
+  const ambientSourceSelect = document.getElementById('ambientSourceSelect');
+  const ambientFixedInput = document.getElementById('ambientFixedInput');
+  if (emissivityInput && document.activeElement !== emissivityInput) {
+    emissivityInput.value = fmtFactor(device.emissivity);
+  }
+  if (transmissivityInput && document.activeElement !== transmissivityInput) {
+    transmissivityInput.value = fmtFactor(device.transmissivity);
+  }
+  if (ambientSourceSelect && document.activeElement !== ambientSourceSelect) {
+    ambientSourceSelect.value = device.ambient_compensation_source === 'fixed' ? 'fixed' : 'internal';
+  }
+  if (ambientFixedInput && document.activeElement !== ambientFixedInput) {
+    ambientFixedInput.value = fmtTemperatureInput(device.ambient_compensation_fixed_c);
+  }
   const loggingTarget = Number(device.logging_target_hz ?? 10);
   const loggingLabel = loggingTarget > 0 ? `${fmtHz(loggingTarget)} Hz` : 'Full stream';
   const loggingSelect = document.getElementById('loggingHzSelect');
@@ -190,6 +223,61 @@ async function applyLoggingRate() {
   }
 }
 
+async function applyIrSettings() {
+  const emissivityInput = document.getElementById('emissivityInput');
+  const transmissivityInput = document.getElementById('transmissivityInput');
+  const ambientSourceSelect = document.getElementById('ambientSourceSelect');
+  const ambientFixedInput = document.getElementById('ambientFixedInput');
+  const button = document.getElementById('applyIrSettingsBtn');
+  const device = pickDevice(latestHealth);
+  if (!emissivityInput || !transmissivityInput || !ambientSourceSelect || !ambientFixedInput || !button || !device) return;
+  const payload = {};
+  if (emissivityInput.value !== '') payload.emissivity = emissivityInput.value;
+  if (transmissivityInput.value !== '') payload.transmissivity = transmissivityInput.value;
+  payload.ambient_source = ambientSourceSelect.value || 'internal';
+  if (ambientSourceSelect.value === 'fixed') {
+    payload.ambient_fixed_c = ambientFixedInput.value;
+  }
+  button.disabled = true;
+  try {
+    await jsonFetch(`api/device/${encodeURIComponent(device.id)}/ir-settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    await refreshAll();
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function readIrSettings() {
+  const emissivityInput = document.getElementById('emissivityInput');
+  const transmissivityInput = document.getElementById('transmissivityInput');
+  const ambientSourceSelect = document.getElementById('ambientSourceSelect');
+  const ambientFixedInput = document.getElementById('ambientFixedInput');
+  const button = document.getElementById('readIrSettingsBtn');
+  const device = pickDevice(latestHealth);
+  if (!emissivityInput || !transmissivityInput || !ambientSourceSelect || !ambientFixedInput || !button || !device) return;
+  button.disabled = true;
+  try {
+    const data = await jsonFetch(`api/device/${encodeURIComponent(device.id)}/ir-settings`);
+    if (data.emissivity !== null && data.emissivity !== undefined) {
+      emissivityInput.value = fmtFactor(data.emissivity);
+    }
+    if (data.transmissivity !== null && data.transmissivity !== undefined) {
+      transmissivityInput.value = fmtFactor(data.transmissivity);
+    }
+    ambientSourceSelect.value = data.ambient_compensation_source === 'fixed' ? 'fixed' : 'internal';
+    if (data.ambient_compensation_fixed_c !== null && data.ambient_compensation_fixed_c !== undefined) {
+      ambientFixedInput.value = fmtTemperatureInput(data.ambient_compensation_fixed_c);
+    }
+    await refreshAll();
+  } finally {
+    button.disabled = false;
+  }
+}
+
 refreshAll().catch((err) => {
   document.getElementById('frameOut').textContent = String(err);
 });
@@ -201,6 +289,18 @@ document.getElementById('deviceSelect').addEventListener('change', (event) => {
 
 document.getElementById('applyLoggingBtn').addEventListener('click', () => {
   applyLoggingRate().catch((err) => {
+    document.getElementById('frameOut').textContent = String(err);
+  });
+});
+
+document.getElementById('applyIrSettingsBtn').addEventListener('click', () => {
+  applyIrSettings().catch((err) => {
+    document.getElementById('frameOut').textContent = String(err);
+  });
+});
+
+document.getElementById('readIrSettingsBtn').addEventListener('click', () => {
+  readIrSettings().catch((err) => {
     document.getElementById('frameOut').textContent = String(err);
   });
 });

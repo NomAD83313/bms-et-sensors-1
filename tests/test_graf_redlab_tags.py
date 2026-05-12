@@ -1,9 +1,16 @@
 import tempfile
 import unittest
 from pathlib import Path
+import sys
 
-from app.graf.graf_csv_helpers import messkluppe_csv_column_name, redlab_csv_column_name
-from app.graf.graf_query_builders import messkluppe_flux, redlab_flux, redlab_flux_raw
+ROOT_DIR = Path(__file__).resolve().parents[1]
+GRAF_APP_DIR = ROOT_DIR / "app" / "graf"
+if str(GRAF_APP_DIR) not in sys.path:
+    sys.path.insert(0, str(GRAF_APP_DIR))
+
+from app.graf.graf_csv_helpers import messkluppe_csv_column_name, pyrometers_csv_column_name, redlab_csv_column_name
+from app.graf.graf_backend_services import _annotate_pyrometer_serials
+from app.graf.graf_query_builders import messkluppe_flux, pyrometers_flux, redlab_flux, redlab_flux_raw
 from app.graf.graf_redlab_state import load_redlab_channels, save_redlab_channels
 
 
@@ -34,6 +41,52 @@ class GrafRedLabTagTests(unittest.TestCase):
     def test_redlab_csv_column_name_uses_device_and_channel(self):
         name = "device=redlab_01A31CE0 | channel=ch0"
         self.assertEqual(redlab_csv_column_name(name), "redlab_01A31CE0_ch0")
+
+    def test_pyrometers_flux_selects_object_head_and_box_fields(self):
+        query = pyrometers_flux(
+            bucket="sensors",
+            measurement="pyrometers",
+            start_expr="-5m",
+            stop_expr=None,
+            window="1s",
+        )
+
+        self.assertIn('r._field == "object_temperature_c"', query)
+        self.assertIn('r._field == "sensor_head_temperature_c"', query)
+        self.assertIn('r._field == "controller_box_temperature_c"', query)
+        self.assertIn('"_time", "_value", "_field", "source", "device", "serial"', query)
+
+    def test_pyrometers_csv_column_name_uses_temperature_channel_aliases(self):
+        self.assertEqual(
+            pyrometers_csv_column_name("source=optris2 | device=OPTRIS_CT | _field=object_temperature_c"),
+            "optris2_tobj",
+        )
+        self.assertEqual(
+            pyrometers_csv_column_name("source=optris2 | device=OPTRIS_CT | serial=CT00028511 | _field=object_temperature_c"),
+            "CT00028511_tobj",
+        )
+        self.assertEqual(
+            pyrometers_csv_column_name("source=optris2 | device=OPTRIS_CT | _field=sensor_head_temperature_c"),
+            "optris2_thead",
+        )
+        self.assertEqual(
+            pyrometers_csv_column_name("source=optris2 | device=OPTRIS_CT | _field=controller_box_temperature_c"),
+            "optris2_tbox",
+        )
+    def test_pyrometers_series_names_can_be_annotated_from_registry_serials(self):
+        series = [
+            {
+                "name": "source=optris2 | device=OPTRIS_CT | _field=object_temperature_c",
+                "points": [{"t": "2026-05-11T10:00:00Z", "v": 25.0}],
+            }
+        ]
+
+        annotated = _annotate_pyrometer_serials(series, {"optris2": "CT00028511"})
+
+        self.assertEqual(
+            annotated[0]["name"],
+            "source=optris2 | device=OPTRIS_CT | serial=CT00028511 | _field=object_temperature_c",
+        )
 
     def test_messkluppe_flux_selects_force_fields(self):
         query = messkluppe_flux(

@@ -35,6 +35,7 @@ class PyrometerProfilesTests(unittest.TestCase):
         self.assertEqual(profiles[0].burst_interval_ms, 50)
         self.assertEqual(profiles[0].burst_command_set, "classic_ct")
         self.assertEqual(profiles[0].burst_channels, ("target_act", "internal", "box", "target_act"))
+        self.assertEqual(profiles[0].serial, "CT0001")
 
     def test_summarize_devices_status_prefers_connected(self):
         self.assertEqual(

@@ -26,12 +26,78 @@ CLASSIC_CT_BURST_CHANNEL_CODES = {
     "transmission": 0x6,
 }
 
+OPTRIS_IR_FACTOR_MIN = 0.05
+OPTRIS_IR_FACTOR_MAX = 1.10
+
 
 def optris_checksum(payload: bytes) -> int:
     value = 0
     for item in payload:
         value ^= item
     return value
+
+
+def _ir_factor_word(value: float) -> int:
+    factor = float(value)
+    if factor < OPTRIS_IR_FACTOR_MIN or factor > OPTRIS_IR_FACTOR_MAX:
+        raise ValueError(f"IR factor must be between {OPTRIS_IR_FACTOR_MIN:.3f} and {OPTRIS_IR_FACTOR_MAX:.3f}")
+    return int(round(factor * 1000.0))
+
+
+def parse_optris_ir_factor_response(data: bytes) -> float | None:
+    raw = bytes(data or b"")
+    if len(raw) < 2:
+        return None
+    return int.from_bytes(raw[:2], "big", signed=False) / 1000.0
+
+
+def build_optris_read_emissivity_command() -> bytes:
+    return b"\x04"
+
+
+def build_optris_read_transmissivity_command() -> bytes:
+    return b"\x05"
+
+
+def build_optris_set_emissivity_command(value: float) -> bytes:
+    word = _ir_factor_word(value)
+    payload = bytes([0x84, (word >> 8) & 0xFF, word & 0xFF])
+    return payload + bytes([optris_checksum(payload)])
+
+
+def build_optris_set_transmissivity_command(value: float) -> bytes:
+    word = _ir_factor_word(value)
+    payload = bytes([0x85, (word >> 8) & 0xFF, word & 0xFF])
+    return payload + bytes([optris_checksum(payload)])
+
+
+def _ambient_temperature_word(value_c: float) -> int:
+    value = float(value_c)
+    if value < -100.0 or value > 900.0:
+        raise ValueError("ambient compensation temperature must be between -100.0 and 900.0 °C")
+    return int(round((value + 100.0) * 10.0))
+
+
+def build_optris_set_ambient_source_command(source: str) -> bytes:
+    values = {
+        "fixed": 0,
+        "internal": 1,
+        "head": 1,
+        "mv_input": 2,
+        "external": 2,
+    }
+    key = str(source or "").strip().lower()
+    if key not in values:
+        raise ValueError("ambient compensation source must be fixed, internal, or external")
+    word = values[key]
+    payload = bytes([0x13, 0x00, (word >> 8) & 0xFF, word & 0xFF])
+    return payload + bytes([optris_checksum(payload)])
+
+
+def build_optris_set_ambient_fixed_temperature_command(value_c: float) -> bytes:
+    word = _ambient_temperature_word(value_c)
+    payload = bytes([0x13, 0x01, (word >> 8) & 0xFF, word & 0xFF])
+    return payload + bytes([optris_checksum(payload)])
 
 
 def _normalize_hex_command(value: str) -> bytes:

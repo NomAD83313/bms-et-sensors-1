@@ -406,6 +406,14 @@ function shortHexId(text) {
   return value;
 }
 
+function seriesTagValue(rawName, key) {
+  for (const part of String(rawName || "").split("|")) {
+    const eq = part.indexOf("=");
+    if (eq > 0 && part.slice(0, eq).trim() === key) return part.slice(eq + 1).trim();
+  }
+  return "";
+}
+
 function seriesColor(name, idx, chartId = "") {
   const redlabKey = redlabChannelKey(name);
   if (redlabKey) {
@@ -415,6 +423,10 @@ function seriesColor(name, idx, chartId = "") {
     if (m) return palette[(Number(m[1]) + hashString(lineKey)) % palette.length];
   }
   const labelKind = getChartConfig(chartId).labelKind;
+  if (labelKind === "pyrometers") {
+    const field = seriesTagValue(name, "_field");
+    if (field && pyrometerFieldColors[field]) return pyrometerFieldColors[field];
+  }
   const chartPalette = labelKind === "mscl"
     ? msclPalette
     : labelKind === "matter"

@@ -1,3 +1,5 @@
+import json
+import os
 from datetime import timezone
 from typing import Any
 
@@ -21,6 +23,57 @@ from graf_series_helpers import (
     resample_series,
     series_median_interval_ms,
 )
+
+
+PYROMETERS_REGISTRY_PATH = os.getenv("PYROMETERS_REGISTRY", "/runtime/pyrometers-devices.json")
+
+
+def _load_pyrometer_serials(registry_path: str = PYROMETERS_REGISTRY_PATH) -> dict[str, str]:
+    try:
+        with open(registry_path, encoding="utf-8") as handle:
+            entries = json.load(handle)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(entries, list):
+        return {}
+    serials: dict[str, str] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        source = str(entry.get("id") or "").strip()
+        serial = str(entry.get("serial") or "").strip()
+        if source and serial:
+            serials[source] = serial
+    return serials
+
+
+def _annotate_pyrometer_serials(series_list: list[dict[str, Any]], serials_by_source: dict[str, str]) -> list[dict[str, Any]]:
+    if not serials_by_source:
+        return series_list
+    out: list[dict[str, Any]] = []
+    for series in series_list:
+        name = str(series.get("name") or "")
+        parts = [part.strip() for part in name.split("|") if part.strip()]
+        tags: dict[str, str] = {}
+        for part in parts:
+            key, sep, value = part.partition("=")
+            if sep:
+                tags[key.strip()] = value.strip()
+        source = tags.get("source", "")
+        serial = serials_by_source.get(source, "")
+        if not serial or tags.get("serial"):
+            out.append(series)
+            continue
+        insert_at = len(parts)
+        for idx, part in enumerate(parts):
+            if part.startswith("_field="):
+                insert_at = idx
+                break
+        next_parts = [*parts[:insert_at], f"serial={serial}", *parts[insert_at:]]
+        next_series = dict(series)
+        next_series["name"] = " | ".join(next_parts)
+        out.append(next_series)
+    return out
 
 
 def build_backend_services(
@@ -195,7 +248,8 @@ def build_backend_services(
 
     def load_pyrometers_series(start_expr: str, stop_expr: str | None, window: str, raw_mode: bool) -> list[dict[str, Any]]:
         del raw_mode
-        return query_series(pyrometers_query(start_expr, stop_expr, window), ["source", "device", "_field"])
+        series = query_series(pyrometers_query(start_expr, stop_expr, window), ["source", "device", "_field"])
+        return _annotate_pyrometer_serials(series, _load_pyrometer_serials())
 
     def load_messkluppe_series(start_expr: str, stop_expr: str | None, window: str, raw_mode: bool) -> list[dict[str, Any]]:
         query_window = "__raw__" if raw_mode else window

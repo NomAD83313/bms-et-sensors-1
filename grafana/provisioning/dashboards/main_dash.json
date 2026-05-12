@@ -375,7 +375,7 @@
             "type": "influxdb",
             "uid": "InfluxDB_Flux"
           },
-          "query": "from(bucket: v.defaultBucket)\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"pyrometers\")\n  |> filter(fn: (r) => r[\"_field\"] == \"object_temperature_c\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> map(fn: (r) => ({ r with device: if exists r.device and r.device != \"\" then r.device else if exists r.source and r.source != \"\" then r.source else \"Pyrometer\" }))\n  |> keep(columns: [\"_time\", \"_value\", \"device\"])",
+          "query": "from(bucket: v.defaultBucket)\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"pyrometers\")\n  |> filter(fn: (r) => r[\"_field\"] == \"object_temperature_c\" or r[\"_field\"] == \"sensor_head_temperature_c\" or r[\"_field\"] == \"controller_box_temperature_c\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> map(fn: (r) => ({ r with serial_label: if exists r.serial and r.serial != \"\" then r.serial else if exists r.source and r.source != \"\" then r.source else \"unknown\" }))\n  |> map(fn: (r) => ({ r with channel: if r[\"_field\"] == \"object_temperature_c\" then \"TObj\" else if r[\"_field\"] == \"sensor_head_temperature_c\" then \"THead\" else \"TBox\" }))\n  |> map(fn: (r) => ({ r with series: r.serial_label + \" \" + r.channel }))\n  |> keep(columns: [\"_time\", \"_value\", \"series\"])\n  |> pivot(rowKey: [\"_time\"], columnKey: [\"series\"], valueColumn: \"_value\")",
           "refId": "A"
         }
       ],

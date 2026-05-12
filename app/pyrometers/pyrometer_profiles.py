@@ -33,6 +33,7 @@ class DeviceProfile:
     display_name: str
     ui_subtitle: str
     source_tag: str
+    serial: str
     match_tokens: tuple[str, ...]
     baud: int = 115200
     mode: str = "stream"
@@ -80,6 +81,7 @@ def build_device_profiles(env: Mapping[str, str] | None = None) -> list[DevicePr
             display_name=entry.get("display_name") or device_id,
             ui_subtitle=entry.get("ui_subtitle") or defaults["ui_subtitle"],
             source_tag=device_id,
+            serial=serial,
             match_tokens=(serial.lower(),),
             baud=int(entry.get("baud") or 115200),
             mode=mode,

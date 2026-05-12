@@ -56,5 +56,22 @@ class GrafanaDashboardTests(unittest.TestCase):
         self.assertIn('r["_field"] == "force_y_raw"', query)
         self.assertIn('r["_field"] == "force_z_raw"', query)
 
+    def test_pyrometers_panel_uses_object_head_and_box_fields(self):
+        panel = self._panel_by_title("Pyrometers Temperature")
+
+        self.assertIsNotNone(panel)
+        query = panel["targets"][0]["query"]
+        self.assertIn('r["_field"] == "object_temperature_c"', query)
+        self.assertIn('r["_field"] == "sensor_head_temperature_c"', query)
+        self.assertIn('r["_field"] == "controller_box_temperature_c"', query)
+        self.assertIn('"TObj"', query)
+        self.assertIn('"THead"', query)
+        self.assertIn('"TBox"', query)
+        self.assertIn("serial_label", query)
+        self.assertIn("r.serial", query)
+        self.assertIn('r.serial_label + " " + r.channel', query)
+        self.assertNotIn('r.device + " " + r.serial_label', query)
+        self.assertIn('pivot(rowKey: ["_time"], columnKey: ["series"], valueColumn: "_value")', query)
+
 if __name__ == "__main__":
     unittest.main()

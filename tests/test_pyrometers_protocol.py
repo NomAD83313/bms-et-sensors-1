@@ -7,8 +7,15 @@ from app.pyrometers.pyrometers_protocol import (
     build_optris_burst_mode_command,
     build_optris_burst_start_commands,
     build_optris_burst_value_command,
+    build_optris_read_emissivity_command,
+    build_optris_read_transmissivity_command,
+    build_optris_set_ambient_fixed_temperature_command,
+    build_optris_set_ambient_source_command,
+    build_optris_set_emissivity_command,
+    build_optris_set_transmissivity_command,
     extract_binary_frame,
     extract_binary_frames,
+    parse_optris_ir_factor_response,
     parse_binary_frame,
     parse_binary_frames,
     parse_burst_word_frames,
@@ -78,6 +85,24 @@ class ThermometerProtocolTests(unittest.TestCase):
             ["511231000072", "520153"],
         )
         self.assertEqual([command.hex() for command in build_classic_ct_burst_stop_commands()], ["520052"])
+
+    def test_build_optris_ir_factor_commands_use_scaled_value_and_checksum(self):
+        self.assertEqual(build_optris_read_emissivity_command().hex(), "04")
+        self.assertEqual(build_optris_read_transmissivity_command().hex(), "05")
+        self.assertEqual(build_optris_set_emissivity_command(0.95).hex(), "8403b631")
+        self.assertEqual(build_optris_set_transmissivity_command(0.80).hex(), "850320a6")
+        self.assertEqual(parse_optris_ir_factor_response(bytes.fromhex("03b6")), 0.95)
+
+    def test_build_optris_ambient_compensation_commands(self):
+        self.assertEqual(build_optris_set_ambient_source_command("fixed").hex(), "1300000013")
+        self.assertEqual(build_optris_set_ambient_source_command("internal").hex(), "1300000112")
+        self.assertEqual(build_optris_set_ambient_fixed_temperature_command(65.0).hex(), "1301067266")
+
+    def test_build_optris_ir_factor_commands_reject_out_of_range_values(self):
+        with self.assertRaises(ValueError):
+            build_optris_set_emissivity_command(0.01)
+        with self.assertRaises(ValueError):
+            build_optris_set_transmissivity_command(1.5)
 
     def test_parse_burst_word_frames_decodes_unmarked_words(self):
         parsed, remainder = parse_burst_word_frames(

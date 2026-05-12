@@ -110,7 +110,28 @@
       gap: 10px;
       align-items: stretch;
     }
-    .row select, .row button, .row .graf-link-button, .toolbar-control-row select, .toolbar-control-row button {
+    .toolbar-control-row.ir-factor-row {
+      grid-template-columns: minmax(86px, 0.9fr) minmax(86px, 0.9fr) minmax(120px, 1fr) minmax(90px, 0.8fr) auto auto;
+      align-items: end;
+    }
+    .ir-factor-input {
+      display: grid;
+      gap: 4px;
+    }
+    .ir-factor-input span {
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .ir-factor-row button {
+      height: 46px;
+      min-height: 46px;
+      align-self: end;
+      padding: 0 14px;
+    }
+    .row select, .row button, .row .graf-link-button, .toolbar-control-row select, .toolbar-control-row input, .toolbar-control-row button {
       border: 1px solid var(--line);
       background: #fff;
       color: var(--ink);
@@ -122,7 +143,7 @@
     .row .graf-link-button {
       text-decoration: none !important;
     }
-    select.control-select {
+    select.control-select, input.control-input {
       display: block;
       width: 100%;
       height: 46px;
@@ -148,6 +169,12 @@
       background-image:
         url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%2317324a' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"),
         linear-gradient(180deg, #ffffff 0%, #f4f8fb 100%);
+    }
+    input.control-input {
+      appearance: textfield;
+      padding: 0 12px;
+      background-image: linear-gradient(180deg, #ffffff 0%, #f4f8fb 100%);
+      cursor: text;
     }
     select.control-select::-ms-expand {
       display: none;
@@ -453,7 +480,7 @@
           </div>
           <div class="toolbar-block">
             <label class="toolbar-label" for="loggingHzSelect">Influx logging</label>
-            <div class="toolbar-control-row">
+            <div class="toolbar-control-row ir-factor-row">
               <select id="loggingHzSelect" class="control-select">
                 <option value="1">1 Hz</option>
                 <option value="2">2 Hz</option>
@@ -466,6 +493,32 @@
                 <option value="0">Full stream</option>
               </select>
               <button type="button" id="applyLoggingBtn">Apply</button>
+            </div>
+          </div>
+          <div class="toolbar-block">
+            <label class="toolbar-label" for="emissivityInput">IR factors</label>
+            <div class="toolbar-control-row ir-factor-row">
+              <label class="ir-factor-input" for="emissivityInput">
+                <span>Emissivity</span>
+                <input id="emissivityInput" class="control-input" type="number" min="0.05" max="1.1" step="0.001" placeholder="0.970">
+              </label>
+              <label class="ir-factor-input" for="transmissivityInput">
+                <span>Transmissivity</span>
+                <input id="transmissivityInput" class="control-input" type="number" min="0.05" max="1.1" step="0.001" placeholder="1.000">
+              </label>
+              <label class="ir-factor-input" for="ambientSourceSelect">
+                <span>Ambient</span>
+                <select id="ambientSourceSelect" class="control-select">
+                  <option value="internal">THead</option>
+                  <option value="fixed">TFixed</option>
+                </select>
+              </label>
+              <label class="ir-factor-input" for="ambientFixedInput">
+                <span>TFixed °C</span>
+                <input id="ambientFixedInput" class="control-input" type="number" min="-100" max="900" step="0.1" placeholder="65.0">
+              </label>
+              <button type="button" id="readIrSettingsBtn">Read</button>
+              <button type="button" id="applyIrSettingsBtn">Apply</button>
             </div>
           </div>
         </div>

@@ -99,11 +99,15 @@ def pyrometers_flux(*, bucket: str, measurement: str, start_expr: str, stop_expr
         f"from(bucket: {bucket_q})\n"
         + range_line(start_expr, stop_expr)
         + f"  |> filter(fn: (r) => r._measurement == {measurement_q})\n"
-        + '  |> filter(fn: (r) => r._field == "object_temperature_c")\n'
+        + (
+            '  |> filter(fn: (r) => r._field == "object_temperature_c" '
+            'or r._field == "sensor_head_temperature_c" '
+            'or r._field == "controller_box_temperature_c")\n'
+        )
     )
     if window and window != "__raw__":
         query += f"  |> aggregateWindow(every: {window}, fn: mean, createEmpty: false)\n"
-    query += '  |> keep(columns: ["_time", "_value", "_field", "source", "device"])\n'
+    query += '  |> keep(columns: ["_time", "_value", "_field", "source", "device", "serial"])\n'
     return query
 
 

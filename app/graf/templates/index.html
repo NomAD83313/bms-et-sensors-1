@@ -465,6 +465,11 @@
     const msclPalette = ["#60a5fa", "#f97316", "#c084fc", "#facc15", "#38bdf8", "#fb7185", "#a3e635", "#f472b6"];
     const matterPalette = ["#2dd4bf", "#f59e0b", "#e879f9", "#84cc16", "#fb7185", "#a78bfa", "#facc15", "#38bdf8"];
     const messkluppePalette = ["#f97316", "#38bdf8", "#a3e635", "#facc15", "#fb7185", "#a78bfa"];
+    const pyrometerFieldColors = {
+      object_temperature_c: "#f97316",
+      sensor_head_temperature_c: "#38bdf8",
+      controller_box_temperature_c: "#34d399",
+    };
     const pageMode = {{ page_mode|tojson }};
     const chartIds = {{ chart_ids | tojson }};
     const chartConfigs = {
@@ -494,10 +499,10 @@
     const normalizeModes = {};
     const yawFilterModes = {};
   </script>
-  <script src="./static/graf_zoom_state.js"></script>
-  <script src="./static/graf_ui_state.js"></script>
-  <script src="./static/graf_chart.js"></script>
-  <script src="./static/graf_exports.js"></script>
-  <script src="./static/graf_app.js"></script>
+  <script src="./static/graf_zoom_state.js?v=pyro-devices-only-1"></script>
+  <script src="./static/graf_ui_state.js?v=pyro-devices-only-1"></script>
+  <script src="./static/graf_chart.js?v=pyro-devices-only-1"></script>
+  <script src="./static/graf_exports.js?v=pyro-devices-only-1"></script>
+  <script src="./static/graf_app.js?v=pyro-devices-only-1"></script>
 </body>
 </html>

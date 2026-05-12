@@ -33,6 +33,12 @@ from pyrometers_protocol import (
     build_classic_ct_burst_stop_commands,
     build_optris_burst_start_commands,
     build_optris_burst_stop_commands,
+    build_optris_read_emissivity_command,
+    build_optris_read_transmissivity_command,
+    build_optris_set_ambient_fixed_temperature_command,
+    build_optris_set_ambient_source_command,
+    build_optris_set_emissivity_command,
+    build_optris_set_transmissivity_command,
     normalize_hex_commands,
     parse_binary_frame,
     parse_binary_frames,
@@ -71,6 +77,8 @@ DEVICE_PROFILES = build_device_profiles()
 class DeviceRuntime:
     profile: DeviceProfile
     serial_lock: threading.Lock = field(default_factory=threading.Lock)
+    command_lock: threading.Lock = field(default_factory=threading.Lock)
+    ir_setting_requests: deque["IrSettingRequest"] = field(default_factory=deque)
     frame_timestamps: deque[float] = field(default_factory=lambda: deque(maxlen=4096))
     frame_metrics_lock: threading.Lock = field(default_factory=threading.Lock)
     log_timestamps: deque[float] = field(default_factory=lambda: deque(maxlen=4096))
@@ -81,6 +89,13 @@ class DeviceRuntime:
     stale_started_monotonic: float | None = None
     last_stale_reopen_monotonic: float | None = None
     next_log_due_ts: float | None = None
+
+
+@dataclass
+class IrSettingRequest:
+    values: dict[str, Any]
+    done: threading.Event = field(default_factory=threading.Event)
+    result: dict[str, Any] = field(default_factory=dict)
 
 
 RUNTIMES = {profile.id: DeviceRuntime(profile) for profile in DEVICE_PROFILES}
@@ -110,6 +125,11 @@ DEVICE_STATES: dict[str, dict[str, Any]] = {
             "controller_box_temperature_c": "TBox",
             "object_temperature_c": "TObj",
         },
+        "emissivity": None,
+        "transmissivity": None,
+        "ambient_compensation_source": None,
+        "ambient_compensation_fixed_c": None,
+        "last_ir_settings_at": None,
         "protocol_mode": THERMOMETER_PROTOCOL,
         "device_mode": profile.mode,
         "stream_frame_format": profile.stream_frame_format,
@@ -370,6 +390,7 @@ def _write_measurement(
         Point(THERMOMETER_MEASUREMENT)
         .tag("source", profile.source_tag)
         .tag("device", profile.device_name)
+        .tag("serial", profile.serial)
         .field("temperature_c", float(value_c))
         .field("raw", str(raw_value))
         .time(observed_at, WritePrecision.NS)
@@ -411,6 +432,131 @@ def _write_serial_commands(ser: serial.Serial, commands: list[bytes]) -> None:
             continue
         ser.write(command)
         ser.flush()
+
+
+def _normalize_ir_setting_value(value: Any) -> float:
+    parsed = float(value)
+    if parsed < 0.05 or parsed > 1.10:
+        raise ValueError("value must be between 0.050 and 1.100")
+    return round(parsed, 3)
+
+
+def _read_optris_factor(ser: serial.Serial, command: bytes) -> float | None:
+    ser.reset_input_buffer()
+    ser.write(command)
+    ser.flush()
+    return _read_optris_factor_response(ser)
+
+
+def _read_optris_factor_response(ser: serial.Serial) -> float | None:
+    deadline = time.monotonic() + 0.5
+    buffer = bytearray()
+    while time.monotonic() < deadline:
+        chunk = bytes(ser.read(1))
+        if not chunk:
+            continue
+        buffer.extend(chunk)
+        if len(buffer) > 32:
+            buffer[:] = buffer[-32:]
+        for idx in range(0, max(0, len(buffer) - 1)):
+            word = int.from_bytes(buffer[idx:idx + 2], "big", signed=False)
+            factor = word / 1000.0
+            if 0.7 <= factor <= 1.10:
+                return factor
+    return None
+
+
+def _apply_ir_settings_on_serial(profile: DeviceProfile, ser: serial.Serial, values: dict[str, Any]) -> dict[str, Any]:
+    if not _is_optris_profile(profile):
+        raise ValueError("IR settings are currently supported for Optris profiles only")
+
+    applied: dict[str, float] = {}
+    source_value = values.get("ambient_source")
+    if source_value is not None:
+        ser.reset_input_buffer()
+        command = build_optris_set_ambient_source_command(str(source_value))
+        ser.write(command)
+        ser.flush()
+    if "ambient_fixed_c" in values:
+        ser.reset_input_buffer()
+        command = build_optris_set_ambient_fixed_temperature_command(values["ambient_fixed_c"])
+        ser.write(command)
+        ser.flush()
+        ser.reset_input_buffer()
+        command = build_optris_set_ambient_source_command("fixed")
+        ser.write(command)
+        ser.flush()
+    if "emissivity" in values:
+        ser.reset_input_buffer()
+        command = build_optris_set_emissivity_command(values["emissivity"])
+        ser.write(command)
+        ser.flush()
+        applied["emissivity"] = values["emissivity"]
+    if "transmissivity" in values:
+        ser.reset_input_buffer()
+        command = build_optris_set_transmissivity_command(values["transmissivity"])
+        ser.write(command)
+        ser.flush()
+        applied["transmissivity"] = values["transmissivity"]
+
+    if "emissivity" not in applied:
+        current = _read_optris_factor(ser, build_optris_read_emissivity_command())
+        if current is not None:
+            applied["emissivity"] = current
+    if "transmissivity" not in applied:
+        current = _read_optris_factor(ser, build_optris_read_transmissivity_command())
+        if current is not None:
+            applied["transmissivity"] = current
+
+    state_updates: dict[str, Any] = {"last_ir_settings_at": datetime.now(timezone.utc).isoformat()}
+    state_updates.update(applied)
+    if source_value is not None:
+        state_updates["ambient_compensation_source"] = str(source_value)
+    if "ambient_fixed_c" in values:
+        state_updates["ambient_compensation_source"] = "fixed"
+        state_updates["ambient_compensation_fixed_c"] = values["ambient_fixed_c"]
+    _update_device_state(profile.id, **state_updates)
+    return {"success": True, "device_id": profile.id, **applied}
+
+
+def _queue_ir_settings(runtime: DeviceRuntime, values: dict[str, Any]) -> dict[str, Any]:
+    request_item = IrSettingRequest(values=values)
+    with runtime.command_lock:
+        runtime.ir_setting_requests.append(request_item)
+    if not request_item.done.wait(timeout=8.0):
+        return {"success": False, "error": "timed out waiting for pyrometer serial stream"}
+    return request_item.result or {"success": False, "error": "empty command result"}
+
+
+def _pop_ir_setting_request(runtime: DeviceRuntime) -> IrSettingRequest | None:
+    with runtime.command_lock:
+        if not runtime.ir_setting_requests:
+            return None
+        return runtime.ir_setting_requests.popleft()
+
+
+def _process_ir_setting_requests(profile: DeviceProfile, runtime: DeviceRuntime, ser: serial.Serial) -> bool:
+    processed = False
+    stopped_stream = False
+    while True:
+        request_item = _pop_ir_setting_request(runtime)
+        if request_item is None:
+            break
+        processed = True
+        try:
+            if profile.burst_mode and not stopped_stream:
+                _write_serial_commands(ser, _stream_stop_commands(profile))
+                time.sleep(0.05)
+                stopped_stream = True
+            request_item.result = _apply_ir_settings_on_serial(profile, ser, request_item.values)
+        except Exception as exc:
+            request_item.result = {"success": False, "device_id": profile.id, "error": str(exc)}
+            _update_device_state(profile.id, last_error=f"IR settings failed: {exc}")
+        finally:
+            request_item.done.set()
+    if stopped_stream:
+        _prepare_stream(profile, ser)
+    return processed
 
 
 def _stream_start_commands(profile: DeviceProfile) -> list[bytes]:
@@ -587,6 +733,10 @@ def _device_loop(runtime: DeviceRuntime) -> None:
                     _reset_stream_runtime(runtime)
                     _prepare_stream(profile, ser)
                     runtime.stream_opened_monotonic = time.monotonic()
+                if _process_ir_setting_requests(profile, runtime, ser):
+                    frame_buffer.clear()
+                    _reset_stream_runtime(runtime)
+                    runtime.stream_opened_monotonic = time.monotonic()
                 chunk = _read_serial_chunk(ser)
             except Exception as exc:
                 if ser is not None:
@@ -734,6 +884,7 @@ def _device_loop_poll(runtime: DeviceRuntime) -> None:
             try:
                 with runtime.serial_lock:
                     with _open_serial(profile, runtime) as ser:
+                        _process_ir_setting_requests(profile, runtime, ser)
                         ser.reset_input_buffer()
                         ser.write(b"\x01")
                         data = bytes(ser.read(2))
@@ -939,6 +1090,63 @@ def api_logging():
         logged_samples_last_10s=state.get("logged_samples_last_10s"),
         logged_samples_total=state.get("logged_samples_total"),
     )
+
+
+@app.route("/api/ir-settings", methods=["GET", "POST"])
+@app.route("/api/device/<device_id>/ir-settings", methods=["GET", "POST"])
+def api_ir_settings(device_id: str | None = None):
+    profile = _selected_profile(device_id or request.args.get("device"))
+    if profile is None:
+        return jsonify(success=False, error="unknown device"), 404
+    state = _get_device_state(profile.id)
+    if request.method == "GET":
+        supported = _is_optris_profile(profile)
+        if supported:
+            result = _queue_ir_settings(RUNTIMES[profile.id], {})
+            if not result.get("success"):
+                return jsonify(result), 500
+            state = _get_device_state(profile.id)
+        return jsonify(
+            success=True,
+            device_id=profile.id,
+            emissivity=state.get("emissivity"),
+            transmissivity=state.get("transmissivity"),
+            ambient_compensation_source=state.get("ambient_compensation_source"),
+            ambient_compensation_fixed_c=state.get("ambient_compensation_fixed_c"),
+            last_ir_settings_at=state.get("last_ir_settings_at"),
+            supported=supported,
+        )
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify(success=False, error="Expected JSON object"), 400
+
+    values: dict[str, Any] = {}
+    try:
+        if payload.get("emissivity") not in (None, ""):
+            values["emissivity"] = _normalize_ir_setting_value(payload.get("emissivity"))
+        if payload.get("transmissivity") not in (None, ""):
+            values["transmissivity"] = _normalize_ir_setting_value(payload.get("transmissivity"))
+        if payload.get("ambient_source") not in (None, ""):
+            ambient_source = str(payload.get("ambient_source") or "").strip().lower()
+            if ambient_source not in {"fixed", "internal", "head"}:
+                raise ValueError("ambient_source must be fixed or internal")
+            values["ambient_source"] = "internal" if ambient_source == "head" else ambient_source
+        if payload.get("ambient_fixed_c") not in (None, ""):
+            ambient_fixed_c = float(payload.get("ambient_fixed_c"))
+            if ambient_fixed_c < -100.0 or ambient_fixed_c > 900.0:
+                raise ValueError("ambient_fixed_c must be between -100.0 and 900.0")
+            values["ambient_fixed_c"] = round(ambient_fixed_c, 1)
+    except (TypeError, ValueError) as exc:
+        return jsonify(success=False, error=str(exc)), 400
+    if not values:
+        return jsonify(success=False, error="Provide emissivity, transmissivity, or ambient compensation"), 400
+    if not _is_optris_profile(profile):
+        return jsonify(success=False, error="IR settings are supported for Optris profiles only"), 400
+
+    result = _queue_ir_settings(RUNTIMES[profile.id], values)
+    status_code = 200 if result.get("success") else 500
+    return jsonify(result), status_code
 
 
 def _startup() -> None:

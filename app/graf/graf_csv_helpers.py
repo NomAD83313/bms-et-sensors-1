@@ -137,6 +137,7 @@ def almemo_csv_column_name(series_name: str) -> str:
 def pyrometers_csv_column_name(series_name: str) -> str:
     source = ""
     device = ""
+    serial = ""
     field = ""
     for part in str(series_name or "").split(" | "):
         part = part.strip()
@@ -144,10 +145,18 @@ def pyrometers_csv_column_name(series_name: str) -> str:
             source = part.split("=", 1)[1]
         elif part.startswith("device="):
             device = part.split("=", 1)[1]
+        elif part.startswith("serial="):
+            serial = part.split("=", 1)[1]
         elif part.startswith("_field="):
             field = part.split("=", 1)[1]
-    field_name = "tobj" if field == "object_temperature_c" else (field or "temperature")
-    return f"{_sanitize(source or 'pyrometers')}_{_sanitize(device or 'device')}_{_sanitize(field_name)}"
+    field_names = {
+        "object_temperature_c": "tobj",
+        "sensor_head_temperature_c": "thead",
+        "controller_box_temperature_c": "tbox",
+    }
+    field_name = field_names.get(field, field or "temperature")
+    device_id = serial or source or device or "pyrometers"
+    return f"{_sanitize(device_id)}_{_sanitize(field_name)}"
 
 
 def messkluppe_csv_column_name(series_name: str) -> str:
