@@ -288,7 +288,15 @@ def start_sampling_group_run(
     try:
         ensure_beacon_on()
         nodes = []
+        active_node_ids = []
         cfgs = []
+        skipped_nodes = []
+
+        def skip_node(node_id, reason):
+            reason_text = str(reason)
+            skipped_nodes.append({"node_id": int(node_id), "reason": reason_text})
+            log_func(f"[mscl-web] [S-GROUP] skip node_id={node_id}: {reason_text}")
+
         for node_id in node_ids:
             node = mscl_mod.WirelessNode(node_id, state.BASE_STATION)
             node.readWriteRetries(10)
@@ -344,11 +352,13 @@ def start_sampling_group_run(
 
             mode_value, mode_err = set_sampling_mode_fn(cfg, mode_key)
             if mode_value is None:
-                return {"success": False, "error": f"Log/Transmit mode not set for node {node_id}: {mode_err}"}
+                skip_node(node_id, f"Log/Transmit mode not set: {mode_err}")
+                continue
 
             data_type_value, data_type_err = set_sampling_data_type_fn(cfg, data_type)
             if data_type_value is None:
-                return {"success": False, "error": f"Data type not set for node {node_id}: {data_type_err}"}
+                skip_node(node_id, f"Data type not set: {data_type_err}")
+                continue
 
             try:
                 issues = mscl_mod.ConfigIssues()
@@ -361,12 +371,20 @@ def start_sampling_group_run(
                         pass
                     joined = "; ".join([t for t in issue_texts if t]) or "verifyConfig returned false"
                     log_func(f"[mscl-web] [S-GROUP] verifyConfig failed node_id={node_id}: {joined}")
-                    return {"success": False, "error": f"Sampling config verify failed for node {node_id}: {joined}"}
+                    skip_node(node_id, f"Sampling config verify failed: {joined}")
+                    continue
             except Exception as e:
                 log_func(f"[mscl-web] [S-GROUP] verifyConfig warning node_id={node_id}: {e}")
+                skip_node(node_id, f"verifyConfig unavailable: {e}")
+                continue
 
-            node.applyConfig(cfg)
+            try:
+                node.applyConfig(cfg)
+            except Exception as e:
+                skip_node(node_id, f"applyConfig failed: {e}")
+                continue
             nodes.append(node)
+            active_node_ids.append(node_id)
             cfgs.append(
                 {
                     "node_id": node_id,
@@ -376,7 +394,18 @@ def start_sampling_group_run(
                 }
             )
 
-        start_method = start_sampling_via_sync_network_multi_fn(nodes, node_ids)
+        if not nodes:
+            skipped_txt = "; ".join(
+                f"{item['node_id']}: {item['reason']}" for item in skipped_nodes
+            )
+            return {
+                "success": False,
+                "error": f"No configured nodes available for group sampling"
+                + (f" ({skipped_txt})" if skipped_txt else ""),
+                "skipped_nodes": skipped_nodes,
+            }
+
+        start_method = start_sampling_via_sync_network_multi_fn(nodes, active_node_ids)
         token = time.time()
         for item in cfgs:
             node_id = int(item["node_id"])
@@ -397,7 +426,8 @@ def start_sampling_group_run(
                 "sample_rate_set": item["sample_rate_set"],
                 "apply_config_ok": True,
                 "start_method": start_method,
-                "group_nodes": list(node_ids),
+                "group_nodes": list(active_node_ids),
+                "skipped_nodes": list(skipped_nodes),
             }
             state.SAMPLE_RUNS[node_id] = run
             if duration_sec > 0:
@@ -409,14 +439,19 @@ def start_sampling_group_run(
             rate_txt = rate_map.get(int(sample_rate), f"{sample_rate} (unknown)")
             rate_log = f"{sample_rate} ({rate_txt})"
         log_func(
-            f"[mscl-web] [S-GROUP] start ok node_ids={','.join(str(x) for x in node_ids)} "
+            f"[mscl-web] [S-GROUP] start ok node_ids={','.join(str(x) for x in active_node_ids)} "
             f"mode={sampling_mode_labels.get(mode_key, mode_key)} dur={duration_sec}s rate={rate_log} data_type={data_type}"
         )
+        if skipped_nodes:
+            skipped_txt = "; ".join(f"{item['node_id']}: {item['reason']}" for item in skipped_nodes)
+            log_func(f"[mscl-web] [S-GROUP] skipped nodes: {skipped_txt}")
         return {
             "success": True,
             "run": {
                 "group_run_id": f"group-{int(token)}",
-                "node_ids": list(node_ids),
+                "node_ids": list(active_node_ids),
+                "requested_node_ids": list(node_ids),
+                "skipped_nodes": list(skipped_nodes),
                 "duration_sec": int(duration_sec),
                 "continuous": bool(duration_sec == 0),
                 "mode_key": mode_key,
