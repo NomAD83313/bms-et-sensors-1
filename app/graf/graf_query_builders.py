@@ -48,7 +48,7 @@ def mscl_flux(
         + f"  |> filter(fn: (r) => r.channel == {channel_q})\n"
     )
     if window and window != "__raw__":
-        query += f"  |> aggregateWindow(every: {window}, fn: mean, createEmpty: false)\n"
+        query += f"  |> aggregateWindow(every: {window}, fn: max, createEmpty: false)\n"
     query += '  |> keep(columns: ["_time", "_value", "_measurement", "device", "source", "channel", "node_id"])'
     return query
 

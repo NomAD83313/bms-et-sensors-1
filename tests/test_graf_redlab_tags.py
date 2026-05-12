@@ -26,7 +26,7 @@ class GrafRedLabTagTests(unittest.TestCase):
             window="2m",
         )
 
-        self.assertIn("aggregateWindow(every: 2m, fn: mean, createEmpty: false)", query)
+        self.assertIn("aggregateWindow(every: 2m, fn: max, createEmpty: false)", query)
         self.assertIn('"_measurement", "device", "source", "channel", "node_id"', query)
 
     def test_mscl_flux_keeps_raw_mode_unaggregated(self):
