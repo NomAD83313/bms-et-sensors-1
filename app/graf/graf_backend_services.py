@@ -1,5 +1,7 @@
 import json
 import os
+import re
+from datetime import timedelta
 from datetime import timezone
 from typing import Any
 
@@ -26,6 +28,8 @@ from graf_series_helpers import (
 
 
 PYROMETERS_REGISTRY_PATH = os.getenv("PYROMETERS_REGISTRY", "/runtime/pyrometers-devices.json")
+_TIME_EXPR_RE = re.compile(r'time\(v:\s*"([^"]+)"\s*\)')
+_CADENCE_LOOKBACK = timedelta(minutes=15)
 
 
 def _load_pyrometer_serials(registry_path: str = PYROMETERS_REGISTRY_PATH) -> dict[str, str]:
@@ -74,6 +78,42 @@ def _annotate_pyrometer_serials(series_list: list[dict[str, Any]], serials_by_so
         next_series["name"] = " | ".join(next_parts)
         out.append(next_series)
     return out
+
+
+def _format_time_expr(dt_obj) -> str:
+    return f'time(v: {json.dumps(dt_obj.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"))})'
+
+
+def _parse_time_expr(expr: str | None, parse_iso_ts_fn) -> Any | None:
+    text = str(expr or "").strip()
+    if not text:
+        return None
+    match = _TIME_EXPR_RE.fullmatch(text)
+    if not match:
+        return None
+    return parse_iso_ts_fn(match.group(1))
+
+
+def _cadence_range_bounds(
+    start_expr: str,
+    stop_expr: str | None,
+    parse_iso_ts_fn,
+    *,
+    lookback: timedelta = _CADENCE_LOOKBACK,
+) -> tuple[str, str | None]:
+    if stop_expr is None:
+        return f"-{int(max(1, lookback.total_seconds()))}s", None
+
+    stop_dt = _parse_time_expr(stop_expr, parse_iso_ts_fn)
+    if stop_dt is None:
+        return start_expr, stop_expr
+
+    bounded_start_dt = stop_dt - lookback
+    start_dt = _parse_time_expr(start_expr, parse_iso_ts_fn)
+    if start_dt is not None and start_dt > bounded_start_dt:
+        bounded_start_dt = start_dt
+
+    return _format_time_expr(bounded_start_dt), _format_time_expr(stop_dt)
 
 
 def build_backend_services(
@@ -270,34 +310,58 @@ def build_backend_services(
         return query_series(matter_query(start_expr, stop_expr, window), ["source", "node_id", "endpoint_id", "cluster_id"])
 
     def panel_raw_cadence_ms(panel_key: str, start_expr: str, stop_expr: str | None) -> float | None:
+        cadence_start_expr, cadence_stop_expr = _cadence_range_bounds(start_expr, stop_expr, parse_iso_ts_fn)
         tail_n = 12
         if panel_key == "mscl_temperature":
-            series = query_series(tail_flux(mscl_query(start_expr, stop_expr), tail_n), ["_measurement", "device", "source", "node_id", "channel"])
+            series = query_series(
+                tail_flux(mscl_query(cadence_start_expr, cadence_stop_expr), tail_n),
+                ["_measurement", "device", "source", "node_id", "channel"],
+            )
             series = normalize_mscl_display_series(series, parse_iso_ts_fn)
             return series_median_interval_ms(series, parse_iso_ts_fn)
         if panel_key == "redlab_temperature":
-            series = query_series(tail_flux(redlab_query(start_expr, stop_expr, "__raw__"), tail_n), ["device", "channel", "field"])
+            series = query_series(
+                tail_flux(redlab_query(cadence_start_expr, cadence_stop_expr, "__raw__"), tail_n),
+                ["device", "channel", "field"],
+            )
             return series_median_interval_ms(series, parse_iso_ts_fn)
         if panel_key == "almemo_live":
-            series = query_series(tail_flux(almemo_query(start_expr, stop_expr, "__raw__"), tail_n), ["device", "mode", "channel", "unit", "sensor"])
+            series = query_series(
+                tail_flux(almemo_query(cadence_start_expr, cadence_stop_expr, "__raw__"), tail_n),
+                ["device", "mode", "channel", "unit", "sensor"],
+            )
             return series_median_interval_ms(series, parse_iso_ts_fn)
         if panel_key == "pyrometers_temperature":
-            series = query_series(tail_flux(pyrometers_query(start_expr, stop_expr, "__raw__"), tail_n), ["source", "device", "_field"])
+            series = query_series(
+                tail_flux(pyrometers_query(cadence_start_expr, cadence_stop_expr, "__raw__"), tail_n),
+                ["source", "device", "_field"],
+            )
             return series_median_interval_ms(series, parse_iso_ts_fn)
         if panel_key == "messkluppe_force":
             series = query_series(
-                tail_flux(messkluppe_query(start_expr, stop_expr, "__raw__", ("force_x_raw", "force_y_raw", "force_z_raw")), tail_n),
+                tail_flux(
+                    messkluppe_query(
+                        cadence_start_expr,
+                        cadence_stop_expr,
+                        "__raw__",
+                        ("force_x_raw", "force_y_raw", "force_z_raw"),
+                    ),
+                    tail_n,
+                ),
                 ["source", "clip_id", "file_id", "_field"],
             )
             return series_median_interval_ms(series, parse_iso_ts_fn)
         if panel_key == "messkluppe_orientation":
             series = query_series(
-                tail_flux(messkluppe_query(start_expr, stop_expr, "__raw__", ("yaw_deg",)), tail_n),
+                tail_flux(messkluppe_query(cadence_start_expr, cadence_stop_expr, "__raw__", ("yaw_deg",)), tail_n),
                 ["source", "clip_id", "file_id", "_field"],
             )
             return series_median_interval_ms(series, parse_iso_ts_fn)
         if panel_key == "matter_temperature":
-            series = query_series(tail_flux(matter_query(start_expr, stop_expr, "__raw__"), tail_n), ["source", "node_id", "endpoint_id", "cluster_id"])
+            series = query_series(
+                tail_flux(matter_query(cadence_start_expr, cadence_stop_expr, "__raw__"), tail_n),
+                ["source", "node_id", "endpoint_id", "cluster_id"],
+            )
             return series_median_interval_ms(series, parse_iso_ts_fn)
         return None
 
