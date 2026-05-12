@@ -20,9 +20,7 @@ from graf_query_builders import (
     pyrometers_flux,
 )
 from graf_series_helpers import (
-    duration_to_ns,
     normalize_mscl_display_series,
-    resample_series,
     series_median_interval_ms,
 )
 
@@ -204,7 +202,7 @@ def build_backend_services(
             series["points"] = points
         return list(out.values())
 
-    def mscl_query(start_expr: str, stop_expr: str | None) -> str:
+    def mscl_query(start_expr: str, stop_expr: str | None, window: str | None = None) -> str:
         return mscl_flux(
             bucket=influx_bucket,
             measurement=mscl_measurement,
@@ -212,6 +210,7 @@ def build_backend_services(
             source_values=mscl_sources,
             start_expr=start_expr,
             stop_expr=stop_expr,
+            window=window,
         )
 
     def redlab_query(start_expr: str, stop_expr: str | None, window: str) -> str:
@@ -268,12 +267,10 @@ def build_backend_services(
         )
 
     def sampled_mscl_series(start_expr: str, stop_expr: str | None, window: str, raw_mode: bool = False) -> list[dict[str, Any]]:
-        raw = query_series(mscl_query(start_expr, stop_expr), ["_measurement", "device", "source", "node_id", "channel"])
+        query_window = "__raw__" if raw_mode else window
+        raw = query_series(mscl_query(start_expr, stop_expr, query_window), ["_measurement", "device", "source", "node_id", "channel"])
         normalized = normalize_mscl_display_series(raw, parse_iso_ts_fn)
-        if raw_mode:
-            return normalized
-        window_ns = duration_to_ns(window) or 1_000_000_000
-        return resample_series(normalized, window_ns, parse_iso_ts_fn)
+        return normalized
 
     def load_mscl_series(start_expr: str, stop_expr: str | None, window: str, raw_mode: bool) -> list[dict[str, Any]]:
         return sampled_mscl_series(start_expr, stop_expr, window, raw_mode=raw_mode)

@@ -10,11 +10,38 @@ if str(GRAF_APP_DIR) not in sys.path:
 
 from app.graf.graf_csv_helpers import messkluppe_csv_column_name, pyrometers_csv_column_name, redlab_csv_column_name
 from app.graf.graf_backend_services import _annotate_pyrometer_serials
-from app.graf.graf_query_builders import messkluppe_flux, pyrometers_flux, redlab_flux, redlab_flux_raw
+from app.graf.graf_query_builders import messkluppe_flux, mscl_flux, pyrometers_flux, redlab_flux, redlab_flux_raw
 from app.graf.graf_redlab_state import load_redlab_channels, save_redlab_channels
 
 
 class GrafRedLabTagTests(unittest.TestCase):
+    def test_mscl_flux_can_aggregate_for_historical_view(self):
+        query = mscl_flux(
+            bucket="sensors",
+            measurement="mscl_sensors",
+            channel="ch1",
+            source_values=["mscl_config_stream", "mscl_node_export"],
+            start_expr="-5m",
+            stop_expr=None,
+            window="2m",
+        )
+
+        self.assertIn("aggregateWindow(every: 2m, fn: mean, createEmpty: false)", query)
+        self.assertIn('"_measurement", "device", "source", "channel", "node_id"', query)
+
+    def test_mscl_flux_keeps_raw_mode_unaggregated(self):
+        query = mscl_flux(
+            bucket="sensors",
+            measurement="mscl_sensors",
+            channel="ch1",
+            source_values=["mscl_config_stream"],
+            start_expr="-5m",
+            stop_expr=None,
+            window="__raw__",
+        )
+
+        self.assertNotIn("aggregateWindow", query)
+
     def test_redlab_flux_keeps_device_and_channel_tags(self):
         query = redlab_flux(
             bucket="sensors",

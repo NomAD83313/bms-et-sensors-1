@@ -29,6 +29,7 @@ def mscl_flux(
     source_values: list[str],
     start_expr: str,
     stop_expr: str | None,
+    window: str | None = None,
 ) -> str:
     bucket_q = json.dumps(bucket)
     measurement_q = json.dumps(measurement)
@@ -46,6 +47,8 @@ def mscl_flux(
         + f"  |> filter(fn: (r) => {source_filter})\n"
         + f"  |> filter(fn: (r) => r.channel == {channel_q})\n"
     )
+    if window and window != "__raw__":
+        query += f"  |> aggregateWindow(every: {window}, fn: mean, createEmpty: false)\n"
     query += '  |> keep(columns: ["_time", "_value", "_measurement", "device", "source", "channel", "node_id"])'
     return query
 
