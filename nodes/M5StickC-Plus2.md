@@ -10,6 +10,7 @@ Matter over Wi-Fi firmware for the BMS DOA `M5StickC Plus2`.
 - Display: `ST7789V2`, `135 x 240`, landscape UI
 - Main button: Button A on `GPIO37`
 - Battery voltage: `GPIO38` ADC, board divider requires `x2`
+- Battery charge/discharge indication: inferred from ADC voltage trend because Plus2 has no readable PMIC charge-status register
 - Power hold: `GPIO4` must be driven high after boot
 
 ## Device Model
@@ -38,9 +39,9 @@ The display wakes for 10 seconds after Button A is pressed, then turns off to
 save battery. A short press wakes the display; if it is already awake, the same
 short press cycles screens and requests an immediate Matter sensor report.
 
-- `Status`: Matter fabric state, Wi-Fi state, IP, RSSI, battery voltage and estimate
+- `Status`: Matter fabric state, Wi-Fi state, IP, RSSI, battery voltage, estimate, and inferred `CHG`/`DIS` direction with the last voltage delta
 - `Pair`: QR payload and manual pairing code; only shown before commissioning
-- `ENV III`: SHT30/QMP6988 state and temperature, humidity, pressure values
+- `ENV`: auto-detected sensor model and temperature, humidity, pressure values
 - `Device`: serial, MAC suffix, firmware, heap and uptime
 
 Long Button A actions:
@@ -48,23 +49,24 @@ Long Button A actions:
 - Hold for `7 s`: open a commissioning window
 - Hold for `15 s`: factory reset Matter state
 
-## ENV.III HAT
+## ENV Sensor Auto-Detection
 
-The top ENV.III HAT is probed on the StickC HAT I2C pins after the Grove bus:
+The top ENV sensor is probed on the Grove bus first and on the StickC HAT I2C
+pins second:
 
 - Grove bus: SDA `GPIO32`, SCL `GPIO33`
 - HAT bus: SDA `GPIO0`, SCL `GPIO26`
-- SHT30: `0x44`
-- QMP6988: `0x70` or `0x56`
+- ENV.III: SHT30 `0x44`, QMP6988 `0x70` or `0x56`
+- ENV.IV: SHT40 `0x44`, BMP280 `0x76`
 
-If the ENV.III is missing or swapped at runtime, the node keeps Matter and Wi-Fi
-online. After three consecutive read failures, the corresponding Matter
+If the ENV sensor is missing or swapped at runtime, the node keeps Matter and
+Wi-Fi online. After three consecutive read failures, the corresponding Matter
 `MeasuredValue` is published as `null` and the display shows `LOST`. The node
 then re-probes the I2C buses periodically and resumes publishing values when a
 compatible sensor is found again.
 
-ENV.III readings are published over Matter every 60 seconds. Pressing Button A
-also forces a fresh ENV.III read and immediate Matter attribute update.
+ENV readings are published over Matter every 60 seconds. Pressing Button A also
+forces a fresh ENV read and immediate Matter attribute update.
 
 ## Build
 

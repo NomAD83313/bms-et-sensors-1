@@ -107,9 +107,12 @@ constexpr gpio_num_t kEnvHatI2cSclGpio = GPIO_NUM_26;
 constexpr i2c_port_t kEnvI2cPort = I2C_NUM_0;
 constexpr uint32_t kEnvI2cClockHz = 100 * 1000;
 constexpr uint8_t kSht30Addr = 0x44;
+constexpr uint8_t kSht40Addr = 0x44;
 constexpr uint8_t kQmp6988AddrUnit = 0x70;
 constexpr uint8_t kQmp6988AddrHat = 0x56;
 constexpr uint8_t kQmp6988ChipId = 0x5c;
+constexpr uint8_t kBmp280Addr = 0x76;
+constexpr uint8_t kBmp280ChipId = 0x58;
 constexpr spi_host_device_t kLcdSpiHost = SPI2_HOST;
 constexpr int kDisplayWidth = 240;
 constexpr int kDisplayHeight = 135;
@@ -131,6 +134,9 @@ constexpr uint32_t kIndicatorPeriodMs = 50;
 constexpr uint32_t kAirRebootDelayMs = 500;
 constexpr uint64_t kBmsAirRebootEventTrigger = 0xFFF10001ull;
 constexpr uint8_t kLedBrightnessCap = 96;
+constexpr int kBatteryFullMv = 4180;
+constexpr int kBatteryChargingRiseMv = 6;
+constexpr int kBatteryChargingHoldMv = -2;
 constexpr ledc_mode_t kStatusLedSpeedMode = LEDC_LOW_SPEED_MODE;
 constexpr ledc_timer_t kStatusLedTimer = LEDC_TIMER_0;
 constexpr ledc_channel_t kStatusLedChannel = LEDC_CHANNEL_0;
@@ -154,6 +160,13 @@ enum class IndicatorState : uint8_t {
     FactoryResetActive,
 };
 
+enum class BatteryChargeState : uint8_t {
+    Unknown,
+    NotCharging,
+    Charging,
+    Full,
+};
+
 struct DeviceContext {
     uint16_t temp_ep_id = 0;
     uint16_t button_ep_id = 0;
@@ -172,16 +185,26 @@ struct DeviceContext {
     uint8_t screen_index = 0;
     int battery_raw = -1;
     int battery_mv = -1;
+    int battery_delta_mv = 0;
+    uint8_t battery_charge_rise_count = 0;
+    BatteryChargeState battery_charge_state = BatteryChargeState::Unknown;
     bool env_i2c_ready = false;
     bool sht30_ready = false;
+    bool sht40_ready = false;
     bool qmp6988_ready = false;
+    bool bmp280_ready = false;
     bool temp_null_published = false;
     bool humidity_null_published = false;
     bool pressure_null_published = false;
-    uint8_t sht30_fail_count = 0;
+    uint8_t temp_humidity_fail_count = 0;
     uint8_t qmp6988_fail_count = 0;
+    uint8_t bmp280_fail_count = 0;
     uint8_t env_reprobe_count = 0;
     uint8_t qmp6988_addr = 0;
+    const char *env_model_name = "ENV: WAIT";
+    const char *env_bus_name = "";
+    const char *temp_humidity_name = "TH";
+    const char *pressure_name = "P";
     float last_temperature_c = NAN;
     float last_humidity_percent = NAN;
     float last_pressure_pa = NAN;
@@ -200,6 +223,22 @@ struct Qmp6988Calibration {
     int64_t b12 = 0;
     int64_t b21 = 0;
     int64_t bp3 = 0;
+};
+
+struct Bmp280Calibration {
+    uint16_t dig_t1 = 0;
+    int16_t dig_t2 = 0;
+    int16_t dig_t3 = 0;
+    uint16_t dig_p1 = 0;
+    int16_t dig_p2 = 0;
+    int16_t dig_p3 = 0;
+    int16_t dig_p4 = 0;
+    int16_t dig_p5 = 0;
+    int16_t dig_p6 = 0;
+    int16_t dig_p7 = 0;
+    int16_t dig_p8 = 0;
+    int16_t dig_p9 = 0;
+    int32_t t_fine = 0;
 };
 
 struct EnvI2cBusConfig {
@@ -228,6 +267,7 @@ DeviceContext s_device;
 IndicatorCtx s_indicator;
 OnboardingInfo s_onboarding;
 Qmp6988Calibration s_qmp_calibration;
+Bmp280Calibration s_bmp280_calibration;
 TaskHandle_t s_telemetry_task_handle = nullptr;
 TickType_t s_boot_tick = 0;
 uint8_t s_test_event_enable_key[chip::TestEventTriggerDelegate::kEnableKeyLength] = {
@@ -741,12 +781,51 @@ int battery_percent_from_mv(int mv)
     return (mv - 3300) * 100 / 900;
 }
 
+const char *battery_charge_state_text(BatteryChargeState state)
+{
+    switch (state) {
+    case BatteryChargeState::Charging:
+        return "CHG";
+    case BatteryChargeState::Full:
+        return "FULL";
+    case BatteryChargeState::NotCharging:
+        return "DIS";
+    case BatteryChargeState::Unknown:
+    default:
+        return "WAIT";
+    }
+}
+
+uint16_t battery_charge_state_color(BatteryChargeState state, uint16_t battery_color)
+{
+    switch (state) {
+    case BatteryChargeState::Charging:
+        return kColorAccent;
+    case BatteryChargeState::Full:
+        return kColorGood;
+    case BatteryChargeState::NotCharging:
+        return kColorWarn;
+    case BatteryChargeState::Unknown:
+    default:
+        return battery_color;
+    }
+}
+
 void fb_battery_icon(int x, int y, int percent, uint16_t color)
 {
     fb_rect_outline(x, y, 34, 16, color);
     fb_rect(x + 34, y + 5, 3, 6, color);
     const int fill_w = std::max(0, std::min(30, percent * 30 / 100));
     fb_rect(x + 2, y + 2, fill_w, 12, color);
+    if (s_device.battery_charge_state == BatteryChargeState::Charging) {
+        fb_rect(x + 16, y + 3, 4, 4, kColorAccent);
+        fb_rect(x + 12, y + 7, 8, 4, kColorAccent);
+        fb_rect(x + 12, y + 11, 4, 3, kColorAccent);
+    } else if (s_device.battery_charge_state == BatteryChargeState::NotCharging) {
+        fb_rect(x + 12, y + 3, 8, 4, kColorWarn);
+        fb_rect(x + 16, y + 7, 4, 4, kColorWarn);
+        fb_rect(x + 12, y + 11, 8, 3, kColorWarn);
+    }
 }
 
 void get_ip_text(char *buf, size_t len)
@@ -827,6 +906,8 @@ void render_status_screen()
     page_label(page, sizeof(page), 0);
     const int percent = battery_percent_from_mv(s_device.battery_mv);
     const uint16_t battery_color = percent > 25 ? kColorGood : (percent > 10 ? kColorWarn : kColorBad);
+    const uint16_t charge_color = battery_charge_state_color(s_device.battery_charge_state, battery_color);
+    const char *charge_text = battery_charge_state_text(s_device.battery_charge_state);
 
     fb_fill(kColorBg);
     fb_header("M5 MATTER", page);
@@ -834,9 +915,9 @@ void render_status_screen()
     fb_text(8, 52, s_indicator.wifi_connected ? "WIFI: LINK UP" : "WIFI: DOWN", s_indicator.wifi_connected ? kColorGood : kColorBad, 2);
     fb_textf(8, 78, kColorText, 1, "IP: %s", ip);
     fb_textf(8, 94, kColorMuted, 1, "RSSI: %d DBM", get_wifi_rssi());
-    fb_battery_icon(176, 72, percent, battery_color);
-    fb_textf(158, 94, battery_color, 1, "BAT %d%%", percent);
-    fb_textf(158, 110, kColorMuted, 1, "%d MV", s_device.battery_mv);
+    fb_battery_icon(176, 72, percent, charge_color);
+    fb_textf(158, 94, charge_color, 1, "%s %+dMV", charge_text, s_device.battery_delta_mv);
+    fb_textf(158, 110, kColorMuted, 1, "%d%% %dMV", percent, s_device.battery_mv);
 }
 
 void render_pairing_screen()
@@ -862,28 +943,33 @@ void render_env_screen(uint8_t page_index)
     char page[8] = {};
     page_label(page, sizeof(page), page_index);
     fb_fill(kColorBg);
-    fb_header("ENV III", page);
-    fb_text(8, 28, s_device.sht30_ready ? "SHT30: READY" : (s_device.env_i2c_ready ? "SHT30: LOST" : "SHT30: WAIT"),
-            s_device.sht30_ready ? kColorGood : kColorWarn, 1);
-    fb_text(132, 28, s_device.qmp6988_ready ? "QMP: READY" : (s_device.env_i2c_ready ? "QMP: LOST" : "QMP: WAIT"),
-            s_device.qmp6988_ready ? kColorGood : kColorWarn, 1);
+    fb_header(s_device.env_model_name, page);
+    fb_textf(8, 28, kColorMuted, 1, "BUS: %s", s_device.env_bus_name[0] ? s_device.env_bus_name : "SCAN");
+    fb_textf(8, 42, (s_device.sht30_ready || s_device.sht40_ready) ? kColorGood : kColorWarn, 1,
+             "%s: %s",
+             s_device.temp_humidity_name,
+             (s_device.sht30_ready || s_device.sht40_ready) ? "READY" : (s_device.env_i2c_ready ? "LOST" : "WAIT"));
+    fb_textf(132, 42, (s_device.qmp6988_ready || s_device.bmp280_ready) ? kColorGood : kColorWarn, 1,
+             "%s: %s",
+             s_device.pressure_name,
+             (s_device.qmp6988_ready || s_device.bmp280_ready) ? "READY" : (s_device.env_i2c_ready ? "LOST" : "WAIT"));
 
     if (std::isfinite(s_device.last_temperature_c)) {
-        fb_textf(8, 50, kColorText, 2, "T %.1f C", static_cast<double>(s_device.last_temperature_c));
+        fb_textf(8, 62, kColorText, 2, "T %.1f C", static_cast<double>(s_device.last_temperature_c));
     } else {
-        fb_text(8, 50, "T WAIT", kColorMuted, 2);
+        fb_text(8, 62, "T WAIT", kColorMuted, 2);
     }
 
     if (std::isfinite(s_device.last_humidity_percent)) {
-        fb_textf(8, 78, kColorText, 2, "H %.1f %%", static_cast<double>(s_device.last_humidity_percent));
+        fb_textf(8, 86, kColorText, 2, "H %.1f %%", static_cast<double>(s_device.last_humidity_percent));
     } else {
-        fb_text(8, 78, "H WAIT", kColorMuted, 2);
+        fb_text(8, 86, "H WAIT", kColorMuted, 2);
     }
 
     if (std::isfinite(s_device.last_pressure_pa)) {
-        fb_textf(8, 106, kColorText, 2, "P %.1f HPA", static_cast<double>(s_device.last_pressure_pa / 100.0f));
+        fb_textf(8, 110, kColorText, 2, "P %.1f HPA", static_cast<double>(s_device.last_pressure_pa / 100.0f));
     } else {
-        fb_text(8, 106, "P WAIT", kColorMuted, 2);
+        fb_text(8, 110, "P WAIT", kColorMuted, 2);
     }
 }
 
@@ -1073,7 +1159,39 @@ void read_battery()
     if (s_device.adc_cali_enabled) {
         adc_cali_raw_to_voltage(s_device.adc_cali_handle, raw, &pin_mv);
     }
-    s_device.battery_mv = pin_mv * 2;
+    const int new_battery_mv = pin_mv * 2;
+    const int previous_mv = s_device.battery_mv;
+    const BatteryChargeState previous_state = s_device.battery_charge_state;
+    s_device.battery_delta_mv = previous_mv >= 0 ? new_battery_mv - previous_mv : 0;
+
+    if (new_battery_mv >= kBatteryFullMv) {
+        s_device.battery_charge_rise_count = 0;
+        s_device.battery_charge_state = BatteryChargeState::Full;
+    } else if (previous_mv < 0) {
+        s_device.battery_charge_rise_count = 0;
+        s_device.battery_charge_state = BatteryChargeState::Unknown;
+    } else {
+        if (s_device.battery_delta_mv >= kBatteryChargingRiseMv) {
+            s_device.battery_charge_rise_count = std::min<uint8_t>(3, s_device.battery_charge_rise_count + 1);
+            s_device.battery_charge_state =
+                s_device.battery_charge_rise_count >= 2 ? BatteryChargeState::Charging : BatteryChargeState::NotCharging;
+        } else if (s_device.battery_charge_state == BatteryChargeState::Charging &&
+                   s_device.battery_delta_mv >= kBatteryChargingHoldMv) {
+            s_device.battery_charge_rise_count = 0;
+            s_device.battery_charge_state = BatteryChargeState::Charging;
+        } else {
+            s_device.battery_charge_rise_count = 0;
+            s_device.battery_charge_state = BatteryChargeState::NotCharging;
+        }
+    }
+
+    s_device.battery_mv = new_battery_mv;
+    if (previous_state != s_device.battery_charge_state) {
+        ESP_LOGI(TAG, "Battery state: %s %+dmV %dmV",
+                 battery_charge_state_text(s_device.battery_charge_state),
+                 s_device.battery_delta_mv,
+                 s_device.battery_mv);
+    }
 }
 
 void enable_wifi_power_save()
@@ -1264,6 +1382,16 @@ uint16_t be16(const uint8_t msb, const uint8_t lsb)
     return (static_cast<uint16_t>(msb) << 8) | lsb;
 }
 
+uint16_t le16(const uint8_t lsb, const uint8_t msb)
+{
+    return (static_cast<uint16_t>(msb) << 8) | lsb;
+}
+
+int16_t le_i16(const uint8_t lsb, const uint8_t msb)
+{
+    return static_cast<int16_t>(le16(lsb, msb));
+}
+
 uint32_t be24(const uint8_t msb, const uint8_t mid, const uint8_t lsb)
 {
     return (static_cast<uint32_t>(msb) << 16) |
@@ -1310,7 +1438,7 @@ esp_err_t configure_env_i2c_bus(const EnvI2cBusConfig &bus)
     config.scl_pullup_en = GPIO_PULLUP_ENABLE;
     config.master.clk_speed = kEnvI2cClockHz;
 
-    ESP_RETURN_ON_ERROR(i2c_param_config(kEnvI2cPort, &config), TAG, "ENV.III I2C config failed");
+    ESP_RETURN_ON_ERROR(i2c_param_config(kEnvI2cPort, &config), TAG, "ENV I2C config failed");
     return i2c_driver_install(kEnvI2cPort, config.mode, 0, 0, 0);
 }
 
@@ -1343,6 +1471,27 @@ esp_err_t read_sht30(float *temperature_c, float *humidity_percent)
     const uint16_t raw_humidity = be16(data[3], data[4]);
     *temperature_c = -45.0f + 175.0f * static_cast<float>(raw_temp) / 65535.0f;
     *humidity_percent = 100.0f * static_cast<float>(raw_humidity) / 65535.0f;
+    return ESP_OK;
+}
+
+esp_err_t read_sht40(float *temperature_c, float *humidity_percent)
+{
+    const uint8_t command = 0xfd;
+    ESP_RETURN_ON_ERROR(i2c_write_bytes(kSht40Addr, &command, 1), TAG, "Failed to start SHT40 measurement");
+    vTaskDelay(pdMS_TO_TICKS(30));
+
+    uint8_t data[6] = {};
+    ESP_RETURN_ON_ERROR(i2c_master_read_from_device(kEnvI2cPort, kSht40Addr, data, sizeof(data), pdMS_TO_TICKS(200)),
+                        TAG, "Failed to read SHT40 measurement");
+    if (sht30_crc8(&data[0], 2) != data[2] || sht30_crc8(&data[3], 2) != data[5]) {
+        return ESP_ERR_INVALID_CRC;
+    }
+
+    const uint16_t raw_temp = be16(data[0], data[1]);
+    const uint16_t raw_humidity = be16(data[3], data[4]);
+    *temperature_c = -45.0f + 175.0f * static_cast<float>(raw_temp) / 65535.0f;
+    *humidity_percent = -6.0f + 125.0f * static_cast<float>(raw_humidity) / 65535.0f;
+    *humidity_percent = std::min(100.0f, std::max(0.0f, *humidity_percent));
     return ESP_OK;
 }
 
@@ -1455,6 +1604,98 @@ esp_err_t read_qmp6988(float *pressure_pa)
     return ESP_OK;
 }
 
+esp_err_t bmp280_read_calibration()
+{
+    uint8_t data[24] = {};
+    ESP_RETURN_ON_ERROR(i2c_read_reg(kBmp280Addr, 0x88, data, sizeof(data)), TAG, "Failed to read BMP280 calibration");
+
+    s_bmp280_calibration.dig_t1 = le16(data[0], data[1]);
+    s_bmp280_calibration.dig_t2 = le_i16(data[2], data[3]);
+    s_bmp280_calibration.dig_t3 = le_i16(data[4], data[5]);
+    s_bmp280_calibration.dig_p1 = le16(data[6], data[7]);
+    s_bmp280_calibration.dig_p2 = le_i16(data[8], data[9]);
+    s_bmp280_calibration.dig_p3 = le_i16(data[10], data[11]);
+    s_bmp280_calibration.dig_p4 = le_i16(data[12], data[13]);
+    s_bmp280_calibration.dig_p5 = le_i16(data[14], data[15]);
+    s_bmp280_calibration.dig_p6 = le_i16(data[16], data[17]);
+    s_bmp280_calibration.dig_p7 = le_i16(data[18], data[19]);
+    s_bmp280_calibration.dig_p8 = le_i16(data[20], data[21]);
+    s_bmp280_calibration.dig_p9 = le_i16(data[22], data[23]);
+    s_bmp280_calibration.t_fine = 0;
+    if (s_bmp280_calibration.dig_t1 == 0 || s_bmp280_calibration.dig_p1 == 0) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    return ESP_OK;
+}
+
+int32_t bmp280_compensate_temperature(int32_t adc_t)
+{
+    const int32_t var1 = ((((adc_t >> 3) - (static_cast<int32_t>(s_bmp280_calibration.dig_t1) << 1))) *
+                          static_cast<int32_t>(s_bmp280_calibration.dig_t2)) >> 11;
+    const int32_t var2 = (((((adc_t >> 4) - static_cast<int32_t>(s_bmp280_calibration.dig_t1)) *
+                            ((adc_t >> 4) - static_cast<int32_t>(s_bmp280_calibration.dig_t1))) >> 12) *
+                          static_cast<int32_t>(s_bmp280_calibration.dig_t3)) >> 14;
+    s_bmp280_calibration.t_fine = var1 + var2;
+    return (s_bmp280_calibration.t_fine * 5 + 128) >> 8;
+}
+
+esp_err_t bmp280_compensate_pressure(int32_t adc_p, float *pressure_pa)
+{
+    int64_t var1 = static_cast<int64_t>(s_bmp280_calibration.t_fine) - 128000;
+    int64_t var2 = var1 * var1 * static_cast<int64_t>(s_bmp280_calibration.dig_p6);
+    var2 += (var1 * static_cast<int64_t>(s_bmp280_calibration.dig_p5)) << 17;
+    var2 += static_cast<int64_t>(s_bmp280_calibration.dig_p4) << 35;
+    var1 = ((var1 * var1 * static_cast<int64_t>(s_bmp280_calibration.dig_p3)) >> 8) +
+           ((var1 * static_cast<int64_t>(s_bmp280_calibration.dig_p2)) << 12);
+    var1 = (((static_cast<int64_t>(1) << 47) + var1) *
+            static_cast<int64_t>(s_bmp280_calibration.dig_p1)) >> 33;
+    if (var1 == 0) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    int64_t pressure = 1048576 - adc_p;
+    pressure = (((pressure << 31) - var2) * 3125) / var1;
+    var1 = (static_cast<int64_t>(s_bmp280_calibration.dig_p9) *
+            (pressure >> 13) * (pressure >> 13)) >> 25;
+    var2 = (static_cast<int64_t>(s_bmp280_calibration.dig_p8) * pressure) >> 19;
+    pressure = ((pressure + var1 + var2) >> 8) +
+               (static_cast<int64_t>(s_bmp280_calibration.dig_p7) << 4);
+    *pressure_pa = static_cast<float>(pressure) / 256.0f;
+    return ESP_OK;
+}
+
+esp_err_t init_bmp280()
+{
+    uint8_t chip_id = 0;
+    ESP_RETURN_ON_ERROR(i2c_read_reg(kBmp280Addr, 0xd0, &chip_id, 1), TAG, "Failed to read BMP280 chip id");
+    if (chip_id != kBmp280ChipId) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    ESP_RETURN_ON_ERROR(i2c_write_byte(kBmp280Addr, 0xe0, 0xb6), TAG, "Failed to reset BMP280");
+    vTaskDelay(pdMS_TO_TICKS(10));
+    ESP_RETURN_ON_ERROR(bmp280_read_calibration(), TAG, "Failed to decode BMP280 calibration");
+    ESP_RETURN_ON_ERROR(i2c_write_byte(kBmp280Addr, 0xf5, 0x80), TAG, "Failed to configure BMP280 standby/filter");
+    ESP_RETURN_ON_ERROR(i2c_write_byte(kBmp280Addr, 0xf4, 0x27), TAG, "Failed to configure BMP280 measurement");
+    vTaskDelay(pdMS_TO_TICKS(20));
+    return ESP_OK;
+}
+
+esp_err_t read_bmp280(float *pressure_pa)
+{
+    uint8_t data[6] = {};
+    ESP_RETURN_ON_ERROR(i2c_read_reg(kBmp280Addr, 0xf7, data, sizeof(data)),
+                        TAG, "Failed to read BMP280 measurement");
+    const int32_t p_raw = (static_cast<int32_t>(data[0]) << 12) |
+                          (static_cast<int32_t>(data[1]) << 4) |
+                          (static_cast<int32_t>(data[2]) >> 4);
+    const int32_t t_raw = (static_cast<int32_t>(data[3]) << 12) |
+                          (static_cast<int32_t>(data[4]) << 4) |
+                          (static_cast<int32_t>(data[5]) >> 4);
+    bmp280_compensate_temperature(t_raw);
+    return bmp280_compensate_pressure(p_raw, pressure_pa);
+}
+
 esp_err_t init_env_sensor()
 {
     const EnvI2cBusConfig buses[] = {
@@ -1463,35 +1704,57 @@ esp_err_t init_env_sensor()
     };
 
     for (const auto &bus : buses) {
-        ESP_LOGI(TAG, "Probing ENV.III on %s I2C bus SDA=%d SCL=%d",
+        ESP_LOGI(TAG, "Probing M5 ENV sensor on %s I2C bus SDA=%d SCL=%d",
                  bus.name, static_cast<int>(bus.sda), static_cast<int>(bus.scl));
         esp_err_t err = configure_env_i2c_bus(bus);
         if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-            ESP_LOGW(TAG, "ENV.III %s I2C driver install failed: %s", bus.name, esp_err_to_name(err));
+            ESP_LOGW(TAG, "ENV %s I2C driver install failed: %s", bus.name, esp_err_to_name(err));
             continue;
         }
 
         s_device.env_i2c_ready = true;
         s_device.sht30_ready = false;
+        s_device.sht40_ready = false;
         s_device.qmp6988_ready = false;
+        s_device.bmp280_ready = false;
         s_device.qmp6988_addr = 0;
-        s_device.sht30_fail_count = 0;
+        s_device.temp_humidity_fail_count = 0;
         s_device.qmp6988_fail_count = 0;
+        s_device.bmp280_fail_count = 0;
+        s_device.env_model_name = "ENV: SCAN";
+        s_device.env_bus_name = bus.name;
+        s_device.temp_humidity_name = "TH";
+        s_device.pressure_name = "P";
 
         float temperature_c = NAN;
         float humidity_percent = NAN;
         err = read_sht30(&temperature_c, &humidity_percent);
         if (err == ESP_OK) {
             s_device.sht30_ready = true;
+            s_device.temp_humidity_name = "SHT30";
             s_device.last_temperature_c = temperature_c;
             s_device.last_humidity_percent = humidity_percent;
-            ESP_LOGI(TAG, "ENV.III SHT30 ready on %s: %.2fC %.2f%%RH",
+            ESP_LOGI(TAG, "ENV SHT30 ready on %s: %.2fC %.2f%%RH",
                      bus.name,
                      static_cast<double>(temperature_c),
                      static_cast<double>(humidity_percent));
         } else {
-            ESP_LOGW(TAG, "ENV.III SHT30 not detected on %s at 0x%02x: %s",
+            ESP_LOGW(TAG, "ENV SHT30 not detected on %s at 0x%02x: %s",
                      bus.name, kSht30Addr, esp_err_to_name(err));
+            err = read_sht40(&temperature_c, &humidity_percent);
+            if (err == ESP_OK) {
+                s_device.sht40_ready = true;
+                s_device.temp_humidity_name = "SHT40";
+                s_device.last_temperature_c = temperature_c;
+                s_device.last_humidity_percent = humidity_percent;
+                ESP_LOGI(TAG, "ENV SHT40 ready on %s: %.2fC %.2f%%RH",
+                         bus.name,
+                         static_cast<double>(temperature_c),
+                         static_cast<double>(humidity_percent));
+            } else {
+                ESP_LOGW(TAG, "ENV SHT40 not detected on %s at 0x%02x: %s",
+                         bus.name, kSht40Addr, esp_err_to_name(err));
+            }
         }
 
         for (const uint8_t addr : {kQmp6988AddrUnit, kQmp6988AddrHat}) {
@@ -1499,35 +1762,65 @@ esp_err_t init_env_sensor()
             if (err == ESP_OK) {
                 s_device.qmp6988_ready = true;
                 s_device.qmp6988_addr = addr;
-                ESP_LOGI(TAG, "ENV.III QMP6988 ready on %s at 0x%02x", bus.name, addr);
+                s_device.pressure_name = "QMP";
+                ESP_LOGI(TAG, "ENV QMP6988 ready on %s at 0x%02x", bus.name, addr);
                 break;
             }
         }
         if (!s_device.qmp6988_ready) {
-            ESP_LOGW(TAG, "ENV.III QMP6988 not detected on %s at 0x%02x or 0x%02x",
+            ESP_LOGW(TAG, "ENV QMP6988 not detected on %s at 0x%02x or 0x%02x",
                      bus.name, kQmp6988AddrUnit, kQmp6988AddrHat);
+            err = init_bmp280();
+            if (err == ESP_OK) {
+                s_device.bmp280_ready = true;
+                s_device.pressure_name = "BMP280";
+                ESP_LOGI(TAG, "ENV BMP280 ready on %s at 0x%02x", bus.name, kBmp280Addr);
+            } else {
+                ESP_LOGW(TAG, "ENV BMP280 not detected on %s at 0x%02x: %s",
+                         bus.name, kBmp280Addr, esp_err_to_name(err));
+            }
         }
 
-        if (s_device.sht30_ready || s_device.qmp6988_ready) {
+        if (s_device.sht40_ready && s_device.bmp280_ready) {
+            s_device.env_model_name = "ENV IV";
+        } else if (s_device.sht30_ready && s_device.qmp6988_ready) {
+            s_device.env_model_name = "ENV III";
+        } else if (s_device.sht30_ready && s_device.bmp280_ready) {
+            s_device.env_model_name = "ENV II";
+        } else if (s_device.sht30_ready || s_device.sht40_ready || s_device.qmp6988_ready || s_device.bmp280_ready) {
+            s_device.env_model_name = "ENV I2C";
+        }
+
+        if (s_device.sht30_ready || s_device.sht40_ready || s_device.qmp6988_ready || s_device.bmp280_ready) {
+            ESP_LOGI(TAG, "Detected %s on %s bus: temp_humidity=%s pressure=%s",
+                     s_device.env_model_name,
+                     s_device.env_bus_name,
+                     (s_device.sht30_ready || s_device.sht40_ready) ? s_device.temp_humidity_name : "none",
+                     (s_device.qmp6988_ready || s_device.bmp280_ready) ? s_device.pressure_name : "none");
             s_device.env_reprobe_count = 0;
             return ESP_OK;
         }
 
         s_device.env_i2c_ready = false;
+        s_device.env_model_name = "ENV: WAIT";
+        s_device.env_bus_name = "";
         i2c_driver_delete(kEnvI2cPort);
     }
     return ESP_ERR_NOT_FOUND;
 }
 
-void mark_sht30_lost(esp_err_t err)
+void mark_temp_humidity_lost(esp_err_t err)
 {
-    if (s_device.sht30_ready) {
-        ESP_LOGW(TAG, "ENV.III SHT30 lost after %u failed reads: %s",
-                 static_cast<unsigned>(s_device.sht30_fail_count),
+    if (s_device.sht30_ready || s_device.sht40_ready) {
+        ESP_LOGW(TAG, "ENV %s lost after %u failed reads: %s",
+                 s_device.temp_humidity_name,
+                 static_cast<unsigned>(s_device.temp_humidity_fail_count),
                  esp_err_to_name(err));
     }
     s_device.sht30_ready = false;
-    s_device.sht30_fail_count = 0;
+    s_device.sht40_ready = false;
+    s_device.temp_humidity_fail_count = 0;
+    s_device.temp_humidity_name = "TH";
     s_device.last_temperature_c = NAN;
     s_device.last_humidity_percent = NAN;
 }
@@ -1535,19 +1828,33 @@ void mark_sht30_lost(esp_err_t err)
 void mark_qmp6988_lost(esp_err_t err)
 {
     if (s_device.qmp6988_ready) {
-        ESP_LOGW(TAG, "ENV.III QMP6988 lost after %u failed reads: %s",
+        ESP_LOGW(TAG, "ENV QMP6988 lost after %u failed reads: %s",
                  static_cast<unsigned>(s_device.qmp6988_fail_count),
                  esp_err_to_name(err));
     }
     s_device.qmp6988_ready = false;
     s_device.qmp6988_fail_count = 0;
     s_device.qmp6988_addr = 0;
+    s_device.pressure_name = s_device.bmp280_ready ? "BMP280" : "P";
+    s_device.last_pressure_pa = NAN;
+}
+
+void mark_bmp280_lost(esp_err_t err)
+{
+    if (s_device.bmp280_ready) {
+        ESP_LOGW(TAG, "ENV BMP280 lost after %u failed reads: %s",
+                 static_cast<unsigned>(s_device.bmp280_fail_count),
+                 esp_err_to_name(err));
+    }
+    s_device.bmp280_ready = false;
+    s_device.bmp280_fail_count = 0;
+    s_device.pressure_name = s_device.qmp6988_ready ? "QMP" : "P";
     s_device.last_pressure_pa = NAN;
 }
 
 void maybe_reprobe_env_sensor()
 {
-    if (s_device.sht30_ready && s_device.qmp6988_ready) {
+    if ((s_device.sht30_ready || s_device.sht40_ready) && (s_device.qmp6988_ready || s_device.bmp280_ready)) {
         s_device.env_reprobe_count = 0;
         return;
     }
@@ -1557,16 +1864,18 @@ void maybe_reprobe_env_sensor()
     }
 
     s_device.env_reprobe_count = 0;
-    ESP_LOGI(TAG, "Re-probing ENV.III after missing sensor state");
+    ESP_LOGI(TAG, "Re-probing ENV after missing sensor state");
     const esp_err_t err = init_env_sensor();
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "ENV.III re-probe did not find a sensor: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "ENV re-probe did not find a sensor: %s", esp_err_to_name(err));
     }
 }
 
 void read_env_sensor()
 {
-    if (!s_device.env_i2c_ready || !s_device.sht30_ready || !s_device.qmp6988_ready) {
+    if (!s_device.env_i2c_ready ||
+        !(s_device.sht30_ready || s_device.sht40_ready) ||
+        !(s_device.qmp6988_ready || s_device.bmp280_ready)) {
         maybe_reprobe_env_sensor();
     }
 
@@ -1574,21 +1883,24 @@ void read_env_sensor()
         return;
     }
 
-    if (s_device.sht30_ready) {
+    if (s_device.sht30_ready || s_device.sht40_ready) {
         float temperature_c = NAN;
         float humidity_percent = NAN;
-        const esp_err_t err = read_sht30(&temperature_c, &humidity_percent);
+        const esp_err_t err = s_device.sht40_ready ?
+            read_sht40(&temperature_c, &humidity_percent) :
+            read_sht30(&temperature_c, &humidity_percent);
         if (err == ESP_OK) {
             s_device.last_temperature_c = temperature_c;
             s_device.last_humidity_percent = humidity_percent;
-            s_device.sht30_fail_count = 0;
+            s_device.temp_humidity_fail_count = 0;
         } else {
-            s_device.sht30_fail_count++;
-            if (s_device.sht30_fail_count >= kEnvMaxConsecutiveReadFailures) {
-                mark_sht30_lost(err);
+            s_device.temp_humidity_fail_count++;
+            if (s_device.temp_humidity_fail_count >= kEnvMaxConsecutiveReadFailures) {
+                mark_temp_humidity_lost(err);
             } else {
-                ESP_LOGW(TAG, "ENV.III SHT30 read failed (%u/%u): %s",
-                         static_cast<unsigned>(s_device.sht30_fail_count),
+                ESP_LOGW(TAG, "ENV %s read failed (%u/%u): %s",
+                         s_device.temp_humidity_name,
+                         static_cast<unsigned>(s_device.temp_humidity_fail_count),
                          static_cast<unsigned>(kEnvMaxConsecutiveReadFailures),
                          esp_err_to_name(err));
             }
@@ -1606,8 +1918,27 @@ void read_env_sensor()
             if (s_device.qmp6988_fail_count >= kEnvMaxConsecutiveReadFailures) {
                 mark_qmp6988_lost(err);
             } else {
-                ESP_LOGW(TAG, "ENV.III QMP6988 read failed (%u/%u): %s",
+                ESP_LOGW(TAG, "ENV QMP6988 read failed (%u/%u): %s",
                          static_cast<unsigned>(s_device.qmp6988_fail_count),
+                         static_cast<unsigned>(kEnvMaxConsecutiveReadFailures),
+                         esp_err_to_name(err));
+            }
+        }
+    }
+
+    if (s_device.bmp280_ready) {
+        float pressure_pa = NAN;
+        const esp_err_t err = read_bmp280(&pressure_pa);
+        if (err == ESP_OK) {
+            s_device.last_pressure_pa = pressure_pa;
+            s_device.bmp280_fail_count = 0;
+        } else {
+            s_device.bmp280_fail_count++;
+            if (s_device.bmp280_fail_count >= kEnvMaxConsecutiveReadFailures) {
+                mark_bmp280_lost(err);
+            } else {
+                ESP_LOGW(TAG, "ENV BMP280 read failed (%u/%u): %s",
+                         static_cast<unsigned>(s_device.bmp280_fail_count),
                          static_cast<unsigned>(kEnvMaxConsecutiveReadFailures),
                          esp_err_to_name(err));
             }
@@ -1734,7 +2065,7 @@ void telemetry_task(void *)
     while (true) {
         read_env_sensor();
         if (std::isfinite(s_device.last_temperature_c)) {
-            ESP_LOGI(TAG, "Updating ENV.III temperature: %.2fC", static_cast<double>(s_device.last_temperature_c));
+            ESP_LOGI(TAG, "Updating ENV temperature: %.2fC", static_cast<double>(s_device.last_temperature_c));
             esp_err_t err = update_temperature_measurement(s_device.last_temperature_c);
             if (err != ESP_OK) {
                 ESP_LOGW(TAG, "Failed to update temperature attribute: %s", esp_err_to_name(err));
@@ -1742,7 +2073,7 @@ void telemetry_task(void *)
                 s_device.temp_null_published = false;
             }
         } else if (!s_device.temp_null_published) {
-            ESP_LOGW(TAG, "Publishing ENV.III temperature as null");
+            ESP_LOGW(TAG, "Publishing ENV temperature as null");
             esp_err_t err = update_temperature_measurement_null();
             if (err != ESP_OK) {
                 ESP_LOGW(TAG, "Failed to publish null temperature attribute: %s", esp_err_to_name(err));
@@ -1751,7 +2082,7 @@ void telemetry_task(void *)
             }
         }
         if (std::isfinite(s_device.last_humidity_percent)) {
-            ESP_LOGI(TAG, "Updating ENV.III humidity: %.2f%%", static_cast<double>(s_device.last_humidity_percent));
+            ESP_LOGI(TAG, "Updating ENV humidity: %.2f%%", static_cast<double>(s_device.last_humidity_percent));
             esp_err_t err = update_humidity_measurement(s_device.last_humidity_percent);
             if (err != ESP_OK) {
                 ESP_LOGW(TAG, "Failed to update humidity attribute: %s", esp_err_to_name(err));
@@ -1759,7 +2090,7 @@ void telemetry_task(void *)
                 s_device.humidity_null_published = false;
             }
         } else if (!s_device.humidity_null_published) {
-            ESP_LOGW(TAG, "Publishing ENV.III humidity as null");
+            ESP_LOGW(TAG, "Publishing ENV humidity as null");
             esp_err_t err = update_humidity_measurement_null();
             if (err != ESP_OK) {
                 ESP_LOGW(TAG, "Failed to publish null humidity attribute: %s", esp_err_to_name(err));
@@ -1768,7 +2099,7 @@ void telemetry_task(void *)
             }
         }
         if (std::isfinite(s_device.last_pressure_pa)) {
-            ESP_LOGI(TAG, "Updating ENV.III pressure: %.2f hPa", static_cast<double>(s_device.last_pressure_pa / 100.0f));
+            ESP_LOGI(TAG, "Updating ENV pressure: %.2f hPa", static_cast<double>(s_device.last_pressure_pa / 100.0f));
             esp_err_t err = update_pressure_measurement(s_device.last_pressure_pa);
             if (err != ESP_OK) {
                 ESP_LOGW(TAG, "Failed to update pressure attribute: %s", esp_err_to_name(err));
@@ -1776,7 +2107,7 @@ void telemetry_task(void *)
                 s_device.pressure_null_published = false;
             }
         } else if (!s_device.pressure_null_published) {
-            ESP_LOGW(TAG, "Publishing ENV.III pressure as null");
+            ESP_LOGW(TAG, "Publishing ENV pressure as null");
             esp_err_t err = update_pressure_measurement_null();
             if (err != ESP_OK) {
                 ESP_LOGW(TAG, "Failed to publish null pressure attribute: %s", esp_err_to_name(err));
@@ -2010,7 +2341,7 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(init_battery_adc());
     esp_err_t env_ret = init_env_sensor();
     if (env_ret != ESP_OK) {
-        ESP_LOGW(TAG, "ENV.III initialization skipped: %s", esp_err_to_name(env_ret));
+        ESP_LOGW(TAG, "ENV initialization skipped: %s", esp_err_to_name(env_ret));
     }
     read_battery();
     esp_err_t lcd_ret = init_lcd();
