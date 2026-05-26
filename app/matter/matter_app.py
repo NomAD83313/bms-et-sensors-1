@@ -701,6 +701,28 @@ def matter_server_control_action(action: str) -> Any:
     return jsonify(result), status_code
 
 
+@app.route("/control/matter-server/wifi-credentials", methods=["POST"])
+def matter_server_wifi_credentials() -> Any:
+    payload = request.get_json(silent=True) if request.is_json else {}
+    if not isinstance(payload, dict):
+        payload = {}
+    ssid = str(payload.get("ssid") or "").strip()
+    credentials = str(payload.get("credentials") or "")
+    if not ssid:
+        return jsonify(success=False, error="missing_ssid"), 400
+    if not credentials:
+        return jsonify(success=False, error="missing_credentials"), 400
+
+    result = _matter_ws_request(
+        "set_wifi_credentials",
+        {"ssid": ssid, "credentials": credentials},
+        timeout_sec=20.0,
+    )
+    if result.get("error_code"):
+        return jsonify(success=False, error="matter_server_error", details=result), 502
+    return jsonify(success=True, ssid=ssid)
+
+
 @app.route("/nodes/<int:node_id>/commands", methods=["POST"])
 def matter_node_standard_command(node_id: int) -> Any:
     payload = request.get_json(silent=True) if request.is_json else {}

@@ -128,6 +128,41 @@ INDEX_HTML = """<!doctype html>
       color: var(--text);
       font-size: 0.9rem;
     }
+    .field-grid {
+      display: grid;
+      grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) auto;
+      gap: 8px;
+      align-items: end;
+      margin-top: 10px;
+    }
+    .field {
+      display: grid;
+      gap: 4px;
+    }
+    .field label {
+      color: var(--muted);
+      font-size: 0.74rem;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+    .text-input {
+      min-width: 0;
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+      color: var(--text);
+      padding: 7px 9px;
+      font: inherit;
+      font-size: 0.86rem;
+    }
+    .inline-status {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 0.82rem;
+      min-height: 1.2em;
+    }
     .ota-status {
       color: var(--muted);
       font-size: 0.86rem;
@@ -481,6 +516,9 @@ INDEX_HTML = """<!doctype html>
       .stack-control-grid {
         grid-template-columns: 1fr;
       }
+      .field-grid {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
@@ -528,6 +566,18 @@ INDEX_HTML = """<!doctype html>
           <div class="service-actions">
             <button type="button" id="restartMatterServer" class="btn">Restart Matter Server</button>
           </div>
+          <form id="wifiCredentialsForm" class="field-grid" autocomplete="off">
+            <div class="field">
+              <label for="matterWifiSsid">Wi-Fi SSID</label>
+              <input id="matterWifiSsid" class="text-input" name="ssid" autocomplete="off" required>
+            </div>
+            <div class="field">
+              <label for="matterWifiPassword">Password</label>
+              <input id="matterWifiPassword" class="text-input" name="credentials" type="password" autocomplete="new-password" required>
+            </div>
+            <button type="submit" id="setWifiCredentials" class="btn">Set Wi-Fi</button>
+          </form>
+          <div id="wifiCredentialsStatus" class="inline-status"></div>
         </div>
         <div class="stat-block service-panel">
           <div class="service-head">
@@ -1456,6 +1506,46 @@ INDEX_HTML = """<!doctype html>
         }, 1800);
       }
     }
+    async function submitWifiCredentials(form) {
+      const button = document.getElementById("setWifiCredentials");
+      const status = document.getElementById("wifiCredentialsStatus");
+      const ssidInput = document.getElementById("matterWifiSsid");
+      const passwordInput = document.getElementById("matterWifiPassword");
+      if (!form || !button || !ssidInput || !passwordInput) return;
+      const ssid = String(ssidInput.value || "").trim();
+      const credentials = String(passwordInput.value || "");
+      if (!ssid || !credentials) {
+        if (status) status.textContent = "SSID and password are required";
+        return;
+      }
+      button.disabled = true;
+      button.textContent = "Setting...";
+      if (status) status.textContent = "Sending credentials to matter-server";
+      try {
+        const res = await fetch("./control/matter-server/wifi-credentials", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ssid, credentials }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || ("HTTP " + res.status));
+        passwordInput.value = "";
+        if (status) status.textContent = `Wi-Fi credentials saved for ${data.ssid || ssid}`;
+        button.textContent = "Saved";
+        setTimeout(() => {
+          button.textContent = "Set Wi-Fi";
+          button.disabled = false;
+        }, 1400);
+      } catch (err) {
+        if (status) status.textContent = String(err);
+        setText("lastError", String(err) + ` | build=${UI_BUILD_ID}`);
+        button.textContent = "Failed";
+        setTimeout(() => {
+          button.textContent = "Set Wi-Fi";
+          button.disabled = false;
+        }, 1800);
+      }
+    }
     async function invokeMatterCommand(button) {
       if (!button) return;
       const previous = button.textContent;
@@ -1634,6 +1724,13 @@ INDEX_HTML = """<!doctype html>
         await invokeControlAction("./control/openthread/restart", restartOtbrBtn, "Restarting...", "Restart OTBR", () => {
           setOtStatus("degraded", "restart requested");
         });
+      });
+    }
+    const wifiForm = document.getElementById("wifiCredentialsForm");
+    if (wifiForm) {
+      wifiForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        await submitWifiCredentials(wifiForm);
       });
     }
     document.addEventListener("click", async (event) => {

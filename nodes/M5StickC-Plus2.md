@@ -40,13 +40,13 @@ save battery. A short press wakes the display; if it is already awake, the same
 short press cycles screens and requests an immediate Matter sensor report.
 
 - `Status`: Matter fabric state, Wi-Fi state, IP, RSSI, battery voltage, estimate, and inferred `CHG`/`DIS` direction with the last voltage delta
-- `Pair`: QR payload and manual pairing code; only shown before commissioning
+- `Pair`: QR payload and manual pairing code; shown before commissioning and while a commissioning window is open
 - `ENV`: auto-detected sensor model and temperature, humidity, pressure values
 - `Device`: serial, MAC suffix, firmware, heap and uptime
 
 Long Button A actions:
 
-- Hold for `7 s`: open a commissioning window
+- Hold for `7 s`: open a commissioning window and show the `Pair` screen
 - Hold for `15 s`: factory reset Matter state
 
 ## ENV Sensor Auto-Detection

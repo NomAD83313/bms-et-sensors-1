@@ -621,6 +621,25 @@ void quiesce_uncommissioned_wifi()
     }
 }
 
+void hold_wifi_station_for_commissioning()
+{
+    if (chip::DeviceLayer::ConnectivityMgr().IsWiFiStationConnected()) {
+        return;
+    }
+
+    ESP_LOGW(TAG, "Holding Wi-Fi station idle before commissioning window");
+    const CHIP_ERROR mode_err = chip::DeviceLayer::ConnectivityMgr().SetWiFiStationMode(
+        chip::DeviceLayer::ConnectivityManager::kWiFiStationMode_ApplicationControlled);
+    if (mode_err != CHIP_NO_ERROR) {
+        ESP_LOGW(TAG, "Failed to hold Wi-Fi station in application-controlled mode: %s", chip::ErrorStr(mode_err));
+    }
+
+    const esp_err_t disconnect_ret = esp_wifi_disconnect();
+    if (disconnect_ret != ESP_OK && disconnect_ret != ESP_ERR_WIFI_NOT_INIT && disconnect_ret != ESP_ERR_WIFI_NOT_STARTED) {
+        ESP_LOGW(TAG, "Wi-Fi disconnect before commissioning failed: %s", esp_err_to_name(disconnect_ret));
+    }
+}
+
 constexpr uint16_t kColorBg = 0x0841;
 constexpr uint16_t kColorPanel = 0x18e3;
 constexpr uint16_t kColorText = 0xffff;
@@ -760,7 +779,7 @@ void fb_header(const char *title, const char *page)
 
 uint8_t display_screen_count()
 {
-    return s_indicator.commissioned ? 3 : 4;
+    return (s_indicator.commissioned && !s_indicator.window_open) ? 3 : 4;
 }
 
 void page_label(char *buf, size_t len, uint8_t page_index)
@@ -996,7 +1015,7 @@ void render_current_screen()
 {
     const uint8_t screen_count = display_screen_count();
     s_device.screen_index %= screen_count;
-    if (s_indicator.commissioned) {
+    if (s_indicator.commissioned && !s_indicator.window_open) {
         switch (s_device.screen_index) {
         case 0: render_status_screen(); break;
         case 1: render_env_screen(1); break;
@@ -1999,6 +2018,7 @@ void schedule_commissioning_window()
 {
     chip::DeviceLayer::PlatformMgr().ScheduleWork(
         [](intptr_t) {
+            hold_wifi_station_for_commissioning();
             CHIP_ERROR err = chip::Server::GetInstance().GetCommissioningWindowManager()
                 .OpenBasicCommissioningWindow(
                     chip::System::Clock::Seconds32(kCommissioningWindowSeconds),
@@ -2189,6 +2209,10 @@ void button_task(void *)
                 } else if (held_ms >= kCommissioningHoldMs) {
                     ESP_LOGI(TAG, "Commissioning window requested (BOOT held %ums)",
                              static_cast<unsigned>(held_ms));
+                    s_indicator.window_open = true;
+                    s_device.screen_index = 1;
+                    wake_display();
+                    render_current_screen();
                     schedule_commissioning_window();
                 } else {
                     const bool was_awake = s_device.display_awake;
@@ -2281,6 +2305,8 @@ void matter_event_callback(const chip::DeviceLayer::ChipDeviceEvent *event, intp
         break;
     case chip::DeviceLayer::DeviceEventType::kCommissioningWindowOpened:
         s_indicator.window_open = true;
+        s_device.screen_index = 1;
+        wake_display();
         ESP_LOGI(TAG, "Commissioning window opened");
         log_commissioning_state("window-opened");
         break;
