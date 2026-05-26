@@ -97,6 +97,8 @@ Relevant environment variables:
 - `MESSKLUPPE_RADIO_POLL_SEC` default `0.05`.
 - `MESSKLUPPE_RADIO_RECENT_PAYLOADS` default `10`.
 - `MESSKLUPPE_RADIO_COMMAND_REPEAT_SEC` default `0.25`.
+- `MESSKLUPPE_RADIO_LIVE_REPEAT_MODE` default `after_rx`; allowed values are `after_rx`, `timer`, and `off`.
+- `MESSKLUPPE_RADIO_ACK_PAD_TO_PAYLOAD_SIZE` default `0`; set `1` to pad ACK payloads to `MESSKLUPPE_RADIO_PAYLOAD_SIZE`.
 - `MESSKLUPPE_CLIP_ID` default `1`.
 - `MESSKLUPPE_INFLUX_MEASUREMENT` default `messkluppe_sensor`.
 - `MESSKLUPPE_SOURCE_TAG` default `messkluppe`.
@@ -134,8 +136,8 @@ Radio TX telemetry:
 - `radio_tx_errors`: command payload build failures.
 - `radio_tx_auto_repeats`: live-mode ACK payload repeats queued by the RX loop.
 
-The TX layer builds and records legacy command payloads. In radio mode it queues those commands as nRF24 ACK payloads on pipe `1`, matching the legacy host `writeAckPayload(1, ...)` pattern. The node receives the command on one of its regular writes if its firmware checks ACK payloads.
-While `live_mode` is active, the RX loop repeats the `1060` live command at `MESSKLUPPE_RADIO_COMMAND_REPEAT_SEC` cadence to match the legacy host behavior.
+The TX layer builds and records legacy command payloads. In radio mode it queues those commands as nRF24 ACK payloads on pipe `1`, matching the legacy host `writeAckPayload(1, ...)` pattern. By default ACK payloads keep their natural dynamic length, matching the legacy 8-byte live command. The node receives the command on one of its regular writes if its firmware checks ACK payloads.
+While `live_mode` is active, the RX loop refreshes the `1060` live command after received packets by default. `MESSKLUPPE_RADIO_LIVE_REPEAT_MODE=timer` restores the earlier timed repeat cadence.
 
 ## v8.0.1 Radio Bring-up Results
 

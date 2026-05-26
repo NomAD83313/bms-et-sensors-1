@@ -11,6 +11,8 @@ _PANEL_ORDER: list[tuple[str, str]] = [
     ("show_pyrometers", "c5"),
     ("show_messkluppe", "c6"),
     ("show_messkluppe_orientation", "c7"),
+    ("show_messkluppe_battery", "c8"),
+    ("show_messkluppe_temperatures", "c9"),
 ]
 
 VIEW_CONFIGS: dict[str, dict[str, Any]] = {
@@ -23,6 +25,8 @@ VIEW_CONFIGS: dict[str, dict[str, Any]] = {
         "show_pyrometers": True,
         "show_messkluppe": True,
         "show_messkluppe_orientation": True,
+        "show_messkluppe_battery": True,
+        "show_messkluppe_temperatures": True,
     },
     "redlab": {
         "title": "Graf App Lite · RedLab",
@@ -116,6 +120,8 @@ VIEW_CONFIGS: dict[str, dict[str, Any]] = {
         "show_pyrometers": False,
         "show_messkluppe": True,
         "show_messkluppe_orientation": True,
+        "show_messkluppe_battery": True,
+        "show_messkluppe_temperatures": True,
     },
 }
 
@@ -161,6 +167,8 @@ def render_index(
         show_pyrometers=bool(cfg.get("show_pyrometers", False)),
         show_messkluppe=bool(cfg.get("show_messkluppe", False)),
         show_messkluppe_orientation=bool(cfg.get("show_messkluppe_orientation", False)),
+        show_messkluppe_battery=bool(cfg.get("show_messkluppe_battery", False)),
+        show_messkluppe_temperatures=bool(cfg.get("show_messkluppe_temperatures", False)),
         chart_ids=[cid for flag, cid in _PANEL_ORDER if cfg.get(flag)],
         export_modals=_export_modals(view_name, cfg),
         single_device_mode=view_name in {"redlab", "mscl", "matter", "almemo", "pyrometers"},

@@ -317,7 +317,7 @@ class MesskluppeAppControlTests(unittest.TestCase):
         self.assertEqual(snap["radio_tx_last_action"], "start_live")
         self.assertEqual(snap["radio_tx_last_result"]["pipe"], 1)
 
-    def test_send_live_ack_payload_can_preserve_tx_fifo(self):
+    def test_send_live_ack_payload_uses_legacy_dynamic_ack_size_by_default(self):
         calls = []
 
         class FakeRadio:
@@ -331,9 +331,16 @@ class MesskluppeAppControlTests(unittest.TestCase):
 
         messkluppe_app._send_live_ack_payload(FakeRadio(), detail="ack_payload_after_rx_pipe_1", flush_tx=False)
 
-        self.assertEqual(calls, [{"pipe": 1, "flush_tx": False, "pad_to": 32}])
+        self.assertEqual(calls, [{"pipe": 1, "flush_tx": False, "pad_to": None}])
         self.assertEqual(messkluppe_app._state_snapshot()["radio_tx_last_action"], "start_live")
         self.assertEqual(messkluppe_app._state_snapshot()["last_command"]["detail"], "ack_payload_after_rx_pipe_1")
+
+    def test_ack_payload_padding_can_match_static_payload_size(self):
+        class FakeRadio:
+            config = {"payload_size": 32}
+
+        with patch.object(messkluppe_app, "MESSKLUPPE_RADIO_ACK_PAD_TO_PAYLOAD_SIZE", True):
+            self.assertEqual(messkluppe_app._ack_payload_pad_to(FakeRadio()), 32)
 
 
 if __name__ == "__main__":

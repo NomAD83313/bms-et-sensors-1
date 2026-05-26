@@ -50,6 +50,8 @@ def _build_ctx(**overrides):
                 "pyrometers_temperature": [],
                 "messkluppe_force": [],
                 "messkluppe_orientation": [],
+                "messkluppe_battery": [],
+                "messkluppe_temperatures": [],
                 "matter_temperature": [],
             },
             {
@@ -59,6 +61,8 @@ def _build_ctx(**overrides):
                 "pyrometers_temperature": {"raw_cadence_ms": None},
                 "messkluppe_force": {"raw_cadence_ms": None},
                 "messkluppe_orientation": {"raw_cadence_ms": None},
+                "messkluppe_battery": {"raw_cadence_ms": None},
+                "messkluppe_temperatures": {"raw_cadence_ms": None},
                 "matter_temperature": {"raw_cadence_ms": None},
             },
         )
@@ -101,6 +105,8 @@ def _build_ctx(**overrides):
         "load_pyrometers_series_fn": lambda *_args: [],
         "load_messkluppe_series_fn": lambda *_args: [],
         "load_messkluppe_orientation_series_fn": lambda *_args: [],
+        "load_messkluppe_battery_series_fn": lambda *_args: [],
+        "load_messkluppe_temperature_series_fn": lambda *_args: [],
         "load_matter_series_fn": lambda *_args: [],
         "panel_raw_cadence_ms_fn": lambda *_args: None,
         "build_single_export_response": build_single_export_response,

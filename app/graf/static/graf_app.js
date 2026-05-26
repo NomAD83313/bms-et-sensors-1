@@ -61,6 +61,8 @@
           c5: toXY(data.panels.pyrometers_temperature || []),
           c6: toXY(data.panels.messkluppe_force || []),
           c7: toXY(data.panels.messkluppe_orientation || []),
+          c8: toXY(data.panels.messkluppe_battery || []),
+          c9: toXY(data.panels.messkluppe_temperatures || []),
         };
         const panelMeta = data.panel_meta || {};
         panelMetaByChart.c1 = panelMeta.redlab_temperature || {};
@@ -70,6 +72,8 @@
         panelMetaByChart.c5 = panelMeta.pyrometers_temperature || {};
         panelMetaByChart.c6 = panelMeta.messkluppe_force || {};
         panelMetaByChart.c7 = panelMeta.messkluppe_orientation || {};
+        panelMetaByChart.c8 = panelMeta.messkluppe_battery || {};
+        panelMetaByChart.c9 = panelMeta.messkluppe_temperatures || {};
         const xMin = new Date(data.window_from_utc || "").getTime();
         const xMax = new Date(data.window_to_utc || "").getTime();
         const xBounds = Number.isFinite(xMin) && Number.isFinite(xMax) && xMax > xMin

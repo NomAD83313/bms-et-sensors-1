@@ -439,6 +439,12 @@
     {% if show_messkluppe_orientation %}
     {{ render_panel("c7", "Messkluppe Orientation", "series", "seriesChannelList-c7", "seriesChannelToggleAll-c7", filter_toggle_id="yawFilter-c7", filter_toggle_label="Filter spikes") }}
     {% endif %}
+    {% if show_messkluppe_battery %}
+    {{ render_panel("c8", "Messkluppe Battery", "series", "seriesChannelList-c8", "seriesChannelToggleAll-c8") }}
+    {% endif %}
+    {% if show_messkluppe_temperatures %}
+    {{ render_panel("c9", "Messkluppe Temperatures", "series", "seriesChannelList-c9", "seriesChannelToggleAll-c9") }}
+    {% endif %}
     {% if show_mscl %}
     {{ render_panel("c2", "MSCL Temperature", "series", "seriesChannelList-c2", "seriesChannelToggleAll-c2") }}
     {% endif %}
@@ -480,6 +486,8 @@
       c5: { kind: "series", labelKind: "pyrometers", padding: 30, dataKey: "pyrometers_temperature" },
       c6: { kind: "series", labelKind: "messkluppe", padding: 30, dataKey: "messkluppe_force" },
       c7: { kind: "series", labelKind: "messkluppe", padding: 30, dataKey: "messkluppe_orientation" },
+      c8: { kind: "series", labelKind: "messkluppe", padding: 30, dataKey: "messkluppe_battery" },
+      c9: { kind: "series", labelKind: "messkluppe", padding: 30, dataKey: "messkluppe_temperatures" },
     };
     const seriesChartIds = chartIds.filter((chartId) => (chartConfigs[chartId] || {}).kind === "series");
     const chartModels = {};

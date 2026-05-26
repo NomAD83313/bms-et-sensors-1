@@ -95,6 +95,10 @@ MESSKLUPPE_RADIO_RECENT_PAYLOADS = max(1, int(os.getenv("MESSKLUPPE_RADIO_RECENT
 MESSKLUPPE_RADIO_COMMAND_REPEAT_SEC = max(0.05, float(os.getenv("MESSKLUPPE_RADIO_COMMAND_REPEAT_SEC", "0.25")))
 MESSKLUPPE_RADIO_ACK_TX_ENABLED = os.getenv("MESSKLUPPE_RADIO_ACK_TX_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 MESSKLUPPE_RADIO_LIVE_REPEAT_ENABLED = os.getenv("MESSKLUPPE_RADIO_LIVE_REPEAT_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+MESSKLUPPE_RADIO_LIVE_REPEAT_MODE = os.getenv("MESSKLUPPE_RADIO_LIVE_REPEAT_MODE", "after_rx").strip().lower()
+if MESSKLUPPE_RADIO_LIVE_REPEAT_MODE not in {"after_rx", "timer", "off"}:
+    MESSKLUPPE_RADIO_LIVE_REPEAT_MODE = "after_rx"
+MESSKLUPPE_RADIO_ACK_PAD_TO_PAYLOAD_SIZE = os.getenv("MESSKLUPPE_RADIO_ACK_PAD_TO_PAYLOAD_SIZE", "0").strip().lower() in {"1", "true", "yes", "on"}
 MESSKLUPPE_CLIP_ID = max(1, int(os.getenv("MESSKLUPPE_CLIP_ID", str(DEFAULT_CLIP_ID))))
 MESSKLUPPE_MEASUREMENT = os.getenv("MESSKLUPPE_INFLUX_MEASUREMENT", DEFAULT_MEASUREMENT).strip() or DEFAULT_MEASUREMENT
 MESSKLUPPE_SOURCE_TAG = os.getenv("MESSKLUPPE_SOURCE_TAG", "messkluppe").strip() or "messkluppe"
@@ -152,6 +156,8 @@ _state: dict[str, Any] = {
     "radio_tx_auto_repeats": 0,
     "radio_ack_tx_enabled": MESSKLUPPE_RADIO_ACK_TX_ENABLED,
     "radio_live_repeat_enabled": MESSKLUPPE_RADIO_LIVE_REPEAT_ENABLED,
+    "radio_live_repeat_mode": MESSKLUPPE_RADIO_LIVE_REPEAT_MODE,
+    "radio_ack_pad_to_payload_size": MESSKLUPPE_RADIO_ACK_PAD_TO_PAYLOAD_SIZE,
     "radio_tx_last_at": None,
     "radio_tx_last_action": "",
     "radio_tx_last_payload_hex": "",
@@ -565,7 +571,13 @@ def _queue_radio_ack_payload(payload: bytes) -> dict[str, Any]:
     with _radio_io_lock:
         if _active_radio is None or not _active_radio.ready:
             raise RuntimeError("radio_rx_loop_not_ready")
-        return _active_radio.write_ack_payload(payload, pipe=1, flush_tx=True, pad_to=int(_active_radio.config.get("payload_size", 32)))
+        return _active_radio.write_ack_payload(payload, pipe=1, flush_tx=True, pad_to=_ack_payload_pad_to(_active_radio))
+
+
+def _ack_payload_pad_to(radio: MesskluppeRadioRx) -> int | None:
+    if not MESSKLUPPE_RADIO_ACK_PAD_TO_PAYLOAD_SIZE:
+        return None
+    return int(radio.config.get("payload_size", 32))
 
 
 def _record_tx_command(
@@ -607,7 +619,7 @@ def _record_tx_command(
 
 def _send_live_ack_payload(radio: MesskluppeRadioRx, *, detail: str, flush_tx: bool) -> None:
     payload = _command_payload_for_action("start_live", {"clip_id": MESSKLUPPE_CLIP_ID})
-    tx_result = radio.write_ack_payload(payload, pipe=1, flush_tx=flush_tx, pad_to=int(radio.config.get("payload_size", 32)))
+    tx_result = radio.write_ack_payload(payload, pipe=1, flush_tx=flush_tx, pad_to=_ack_payload_pad_to(radio))
     _record_tx_command("start_live", payload, accepted=True, detail=detail, tx_result=tx_result)
 
 
@@ -618,7 +630,7 @@ def _repeat_live_ack_payload(radio: MesskluppeRadioRx) -> None:
 
 def _repeat_pending_ack_payload(radio: MesskluppeRadioRx, action: str, payload: dict[str, Any] | None = None) -> None:
     command_payload = _command_payload_for_action(action, payload)
-    tx_result = radio.write_ack_payload(command_payload, pipe=1, flush_tx=False, pad_to=int(radio.config.get("payload_size", 32)))
+    tx_result = radio.write_ack_payload(command_payload, pipe=1, flush_tx=False, pad_to=_ack_payload_pad_to(radio))
     _record_tx_command(action, command_payload, accepted=True, detail="ack_payload_after_rx_pipe_1", tx_result=tx_result)
     _bump("radio_tx_auto_repeats")
 
@@ -888,6 +900,7 @@ def _radio_collector_loop() -> None:
                         if (
                             MESSKLUPPE_RADIO_ACK_TX_ENABLED
                             and MESSKLUPPE_RADIO_LIVE_REPEAT_ENABLED
+                            and MESSKLUPPE_RADIO_LIVE_REPEAT_MODE == "timer"
                             and snap.get("live_mode")
                             and time.time() >= next_live_repeat_at
                         ):
@@ -906,6 +919,7 @@ def _radio_collector_loop() -> None:
                         if (
                             MESSKLUPPE_RADIO_ACK_TX_ENABLED
                             and MESSKLUPPE_RADIO_LIVE_REPEAT_ENABLED
+                            and MESSKLUPPE_RADIO_LIVE_REPEAT_MODE in {"after_rx", "timer"}
                             and snap.get("live_mode")
                         ):
                             _send_live_ack_payload(radio, detail="ack_payload_after_rx_pipe_1", flush_tx=False)

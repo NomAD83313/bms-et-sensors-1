@@ -302,6 +302,20 @@ def build_backend_services(
             ["source", "clip_id", "file_id", "_field"],
         )
 
+    def load_messkluppe_battery_series(start_expr: str, stop_expr: str | None, window: str, raw_mode: bool) -> list[dict[str, Any]]:
+        query_window = "__raw__" if raw_mode else window
+        return query_series(
+            messkluppe_query(start_expr, stop_expr, query_window, ("battery_raw",)),
+            ["source", "clip_id", "file_id", "_field"],
+        )
+
+    def load_messkluppe_temperature_series(start_expr: str, stop_expr: str | None, window: str, raw_mode: bool) -> list[dict[str, Any]]:
+        query_window = "__raw__" if raw_mode else window
+        return query_series(
+            messkluppe_query(start_expr, stop_expr, query_window, ("imu_temperature_c", "clip_temperature_raw")),
+            ["source", "clip_id", "file_id", "_field"],
+        )
+
     def load_matter_series(start_expr: str, stop_expr: str | None, window: str, raw_mode: bool) -> list[dict[str, Any]]:
         del raw_mode
         return query_series(matter_query(start_expr, stop_expr, window), ["source", "node_id", "endpoint_id", "cluster_id"])
@@ -354,6 +368,18 @@ def build_backend_services(
                 ["source", "clip_id", "file_id", "_field"],
             )
             return series_median_interval_ms(series, parse_iso_ts_fn)
+        if panel_key == "messkluppe_battery":
+            series = query_series(
+                tail_flux(messkluppe_query(start_expr, stop_expr, "__raw__", ("battery_raw",)), tail_n),
+                ["source", "clip_id", "file_id", "_field"],
+            )
+            return series_median_interval_ms(series, parse_iso_ts_fn)
+        if panel_key == "messkluppe_temperatures":
+            series = query_series(
+                tail_flux(messkluppe_query(start_expr, stop_expr, "__raw__", ("imu_temperature_c", "clip_temperature_raw")), tail_n),
+                ["source", "clip_id", "file_id", "_field"],
+            )
+            return series_median_interval_ms(series, parse_iso_ts_fn)
         if panel_key == "matter_temperature":
             series = query_series(
                 tail_flux(matter_query(cadence_start_expr, cadence_stop_expr, "__raw__"), tail_n),
@@ -395,6 +421,8 @@ def build_backend_services(
         "load_pyrometers_series_fn": load_pyrometers_series,
         "load_messkluppe_series_fn": load_messkluppe_series,
         "load_messkluppe_orientation_series_fn": load_messkluppe_orientation_series,
+        "load_messkluppe_battery_series_fn": load_messkluppe_battery_series,
+        "load_messkluppe_temperature_series_fn": load_messkluppe_temperature_series,
         "load_matter_series_fn": load_matter_series,
         "panel_raw_cadence_ms_fn": panel_raw_cadence_ms,
         "csv_export_response_fn": csv_export_response,
