@@ -10,11 +10,12 @@ class GrafViewsTests(unittest.TestCase):
         self.assertEqual(cfg["title"], "Graf App Lite · Pyrometers")
         self.assertEqual(cfg["device"]["panel_title"], "Pyrometers")
 
-    def test_matter_view_uses_generic_matter_temperature_title(self):
+    def test_matter_view_shows_temperature_and_battery(self):
         cfg = VIEW_CONFIGS["matter"]
 
         self.assertEqual(cfg["title"], "Graf App Lite · Matter")
-        self.assertEqual(cfg["device"]["panel_title"], "Matter Temperature")
+        self.assertTrue(cfg["show_matter"])
+        self.assertTrue(cfg["show_matter_battery"])
 
     def test_all_view_includes_messkluppe_panel(self):
         cfg = VIEW_CONFIGS["all"]
@@ -23,6 +24,7 @@ class GrafViewsTests(unittest.TestCase):
         self.assertTrue(cfg["show_messkluppe_orientation"])
         self.assertTrue(cfg["show_messkluppe_battery"])
         self.assertTrue(cfg["show_messkluppe_temperatures"])
+        self.assertTrue(cfg["show_matter_battery"])
 
     def test_messkluppe_view_uses_force_orientation_and_battery_windows(self):
         cfg = VIEW_CONFIGS["messkluppe"]

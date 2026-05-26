@@ -95,6 +95,7 @@ def register_routes(app, ctx: dict):
             load_messkluppe_battery_series_fn=ctx["load_messkluppe_battery_series_fn"],
             load_messkluppe_temperature_series_fn=ctx["load_messkluppe_temperature_series_fn"],
             load_matter_series_fn=ctx["load_matter_series_fn"],
+            load_matter_battery_series_fn=ctx["load_matter_battery_series_fn"],
             panel_raw_cadence_ms_fn=ctx["panel_raw_cadence_ms_fn"],
         )
         return jsonify(

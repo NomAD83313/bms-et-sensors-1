@@ -11,6 +11,7 @@ from graf_csv_helpers import build_csv_content, make_csv_filename, make_csv_resp
 from graf_query_builders import (
     almemo_flux,
     matter_flux,
+    matter_battery_flux,
     messkluppe_flux,
     mscl_flux,
     redlab_flux,
@@ -266,6 +267,15 @@ def build_backend_services(
             window=window,
         )
 
+    def matter_battery_query(start_expr: str, stop_expr: str | None, window: str) -> str:
+        return matter_battery_flux(
+            bucket=influx_bucket,
+            measurement=matter_measurement,
+            start_expr=start_expr,
+            stop_expr=stop_expr,
+            window=window,
+        )
+
     def sampled_mscl_series(start_expr: str, stop_expr: str | None, window: str, raw_mode: bool = False) -> list[dict[str, Any]]:
         query_window = "__raw__" if raw_mode else window
         raw = query_series(mscl_query(start_expr, stop_expr, query_window), ["_measurement", "device", "source", "node_id", "channel"])
@@ -319,6 +329,13 @@ def build_backend_services(
     def load_matter_series(start_expr: str, stop_expr: str | None, window: str, raw_mode: bool) -> list[dict[str, Any]]:
         del raw_mode
         return query_series(matter_query(start_expr, stop_expr, window), ["source", "node_id", "endpoint_id", "cluster_id"])
+
+    def load_matter_battery_series(start_expr: str, stop_expr: str | None, window: str, raw_mode: bool) -> list[dict[str, Any]]:
+        del raw_mode
+        return query_series(
+            matter_battery_query(start_expr, stop_expr, window),
+            ["source", "node_id", "endpoint_id", "cluster_id", "attribute_id"],
+        )
 
     def panel_raw_cadence_ms(panel_key: str, start_expr: str, stop_expr: str | None) -> float | None:
         cadence_start_expr, cadence_stop_expr = _cadence_range_bounds(start_expr, stop_expr, parse_iso_ts_fn)
@@ -386,6 +403,12 @@ def build_backend_services(
                 ["source", "node_id", "endpoint_id", "cluster_id"],
             )
             return series_median_interval_ms(series, parse_iso_ts_fn)
+        if panel_key == "matter_battery":
+            series = query_series(
+                tail_flux(matter_battery_query(cadence_start_expr, cadence_stop_expr, "__raw__"), tail_n),
+                ["source", "node_id", "endpoint_id", "cluster_id", "attribute_id"],
+            )
+            return series_median_interval_ms(series, parse_iso_ts_fn)
         return None
 
     def csv_export_response(
@@ -424,6 +447,7 @@ def build_backend_services(
         "load_messkluppe_battery_series_fn": load_messkluppe_battery_series,
         "load_messkluppe_temperature_series_fn": load_messkluppe_temperature_series,
         "load_matter_series_fn": load_matter_series,
+        "load_matter_battery_series_fn": load_matter_battery_series,
         "panel_raw_cadence_ms_fn": panel_raw_cadence_ms,
         "csv_export_response_fn": csv_export_response,
     }

@@ -10,7 +10,14 @@ if str(GRAF_APP_DIR) not in sys.path:
 
 from app.graf.graf_csv_helpers import messkluppe_csv_column_name, pyrometers_csv_column_name, redlab_csv_column_name
 from app.graf.graf_backend_services import _annotate_pyrometer_serials
-from app.graf.graf_query_builders import messkluppe_flux, mscl_flux, pyrometers_flux, redlab_flux, redlab_flux_raw
+from app.graf.graf_query_builders import (
+    matter_battery_flux,
+    messkluppe_flux,
+    mscl_flux,
+    pyrometers_flux,
+    redlab_flux,
+    redlab_flux_raw,
+)
 from app.graf.graf_redlab_state import load_redlab_channels, save_redlab_channels
 
 
@@ -147,6 +154,19 @@ class GrafRedLabTagTests(unittest.TestCase):
     def test_messkluppe_csv_column_name_uses_clip_file_and_field(self):
         name = "source=messkluppe | clip_id=1 | file_id=fake | _field=force_x_raw"
         self.assertEqual(messkluppe_csv_column_name(name), "messkluppe_clip_1_file_fake_force_x_raw")
+
+    def test_matter_battery_flux_selects_power_source_percent(self):
+        query = matter_battery_flux(
+            bucket="sensors",
+            measurement="matter_sensor",
+            start_expr="-5m",
+            stop_expr=None,
+            window="1s",
+        )
+
+        self.assertIn('r.cluster_id == "47"', query)
+        self.assertIn('r.attribute_id == "12"', query)
+        self.assertIn("_value: r._value / 2.0", query)
 
     def test_redlab_channel_state_preserves_device_channel_keys(self):
         with tempfile.TemporaryDirectory() as tmp:

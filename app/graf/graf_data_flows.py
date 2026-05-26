@@ -16,6 +16,7 @@ def load_dashboard_panels(
     load_messkluppe_battery_series_fn,
     load_messkluppe_temperature_series_fn,
     load_matter_series_fn,
+    load_matter_battery_series_fn,
     panel_raw_cadence_ms_fn,
 ):
     raw_mode = (window == "__raw__")
@@ -29,6 +30,7 @@ def load_dashboard_panels(
         "messkluppe_battery": [],
         "messkluppe_temperatures": [],
         "matter_temperature": [],
+        "matter_battery": [],
     }
     panel_meta: dict[str, dict[str, Any]] = {
         key: {"raw_cadence_ms": None} for key in panels.keys()
@@ -58,6 +60,8 @@ def load_dashboard_panels(
     if view_mode in {"all", "matter"}:
         panels["matter_temperature"] = load_matter_series_fn(start_expr, stop_expr, window, raw_mode)
         panel_meta["matter_temperature"]["raw_cadence_ms"] = panel_raw_cadence_ms_fn("matter_temperature", start_expr, stop_expr)
+        panels["matter_battery"] = load_matter_battery_series_fn(start_expr, stop_expr, window, raw_mode)
+        panel_meta["matter_battery"]["raw_cadence_ms"] = panel_raw_cadence_ms_fn("matter_battery", start_expr, stop_expr)
     return panels, panel_meta
 
 

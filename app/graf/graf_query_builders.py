@@ -155,3 +155,22 @@ def matter_flux(*, bucket: str, measurement: str, start_expr: str, stop_expr: st
     query += '  |> map(fn: (r) => ({ r with _value: r._value / 100.0 }))\n'
     query += '  |> keep(columns: ["_time", "_value", "source", "node_id", "endpoint_id", "cluster_id"])\n'
     return query
+
+
+def matter_battery_flux(*, bucket: str, measurement: str, start_expr: str, stop_expr: str | None, window: str) -> str:
+    bucket_q = json.dumps(bucket)
+    measurement_q = json.dumps(measurement)
+    query = (
+        f"from(bucket: {bucket_q})\n"
+        + range_line(start_expr, stop_expr)
+        + f"  |> filter(fn: (r) => r._measurement == {measurement_q})\n"
+        + '  |> filter(fn: (r) => r.event_type == "attribute_updated")\n'
+        + '  |> filter(fn: (r) => r.cluster_id == "47")\n'
+        + '  |> filter(fn: (r) => r.attribute_id == "12")\n'
+        + '  |> filter(fn: (r) => r._field == "value")\n'
+    )
+    if window and window != "__raw__":
+        query += f"  |> aggregateWindow(every: {window}, fn: mean, createEmpty: false)\n"
+    query += '  |> map(fn: (r) => ({ r with _value: r._value / 2.0 }))\n'
+    query += '  |> keep(columns: ["_time", "_value", "source", "node_id", "endpoint_id", "cluster_id", "attribute_id"])\n'
+    return query

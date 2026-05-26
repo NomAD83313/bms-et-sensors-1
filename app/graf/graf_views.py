@@ -13,6 +13,7 @@ _PANEL_ORDER: list[tuple[str, str]] = [
     ("show_messkluppe_orientation", "c7"),
     ("show_messkluppe_battery", "c8"),
     ("show_messkluppe_temperatures", "c9"),
+    ("show_matter_battery", "c10"),
 ]
 
 VIEW_CONFIGS: dict[str, dict[str, Any]] = {
@@ -27,6 +28,7 @@ VIEW_CONFIGS: dict[str, dict[str, Any]] = {
         "show_messkluppe_orientation": True,
         "show_messkluppe_battery": True,
         "show_messkluppe_temperatures": True,
+        "show_matter_battery": True,
     },
     "redlab": {
         "title": "Graf App Lite · RedLab",
@@ -99,17 +101,10 @@ VIEW_CONFIGS: dict[str, dict[str, Any]] = {
         "show_redlab": False,
         "show_mscl": False,
         "show_matter": True,
+        "show_matter_battery": True,
         "show_almemo": False,
         "show_pyrometers": False,
         "show_messkluppe": False,
-        "device": {
-            "panel_title": "Matter Temperature",
-            "chart_id": "c3",
-            "list_id": "seriesChannelList-c3",
-            "toggle_all_id": "seriesChannelToggleAll-c3",
-            "list_kind": "series",
-            "export_kind": "matter",
-        },
     },
     "messkluppe": {
         "title": "Graf App Lite · Messkluppe",
@@ -163,6 +158,7 @@ def render_index(
         show_redlab=bool(cfg["show_redlab"]),
         show_mscl=bool(cfg["show_mscl"]),
         show_matter=bool(cfg.get("show_matter", False)),
+        show_matter_battery=bool(cfg.get("show_matter_battery", False)),
         show_almemo=bool(cfg.get("show_almemo", False)),
         show_pyrometers=bool(cfg.get("show_pyrometers", False)),
         show_messkluppe=bool(cfg.get("show_messkluppe", False)),
@@ -171,7 +167,7 @@ def render_index(
         show_messkluppe_temperatures=bool(cfg.get("show_messkluppe_temperatures", False)),
         chart_ids=[cid for flag, cid in _PANEL_ORDER if cfg.get(flag)],
         export_modals=_export_modals(view_name, cfg),
-        single_device_mode=view_name in {"redlab", "mscl", "matter", "almemo", "pyrometers"},
+        single_device_mode=view_name in {"redlab", "mscl", "almemo", "pyrometers"},
         device=cfg.get("device"),
         default_range=default_range,
         default_refresh_sec=default_refresh_sec,
