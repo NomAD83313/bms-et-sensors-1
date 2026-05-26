@@ -43,6 +43,9 @@
 #include <clusters/BasicInformation/ClusterId.h>
 #include <clusters/PressureMeasurement/AttributeIds.h>
 #include <clusters/PressureMeasurement/ClusterId.h>
+#include <clusters/PowerSource/AttributeIds.h>
+#include <clusters/PowerSource/ClusterId.h>
+#include <clusters/PowerSource/Enums.h>
 #include <clusters/RelativeHumidityMeasurement/AttributeIds.h>
 #include <clusters/RelativeHumidityMeasurement/ClusterId.h>
 #include <clusters/TemperatureMeasurement/AttributeIds.h>
@@ -173,6 +176,7 @@ struct DeviceContext {
     uint16_t button_ep_id = 0;
     uint16_t humidity_ep_id = 0;
     uint16_t pressure_ep_id = 0;
+    uint16_t power_ep_id = 0;
     esp_lcd_panel_handle_t lcd_panel = nullptr;
     uint16_t *framebuffer = nullptr;
     uint16_t *lcd_flush_buffer = nullptr;
@@ -841,6 +845,38 @@ int battery_percent_from_mv(int mv)
     return (mv - 3300) * 100 / 900;
 }
 
+uint8_t matter_battery_percent_remaining(int mv)
+{
+    return static_cast<uint8_t>(std::clamp(battery_percent_from_mv(mv) * 2, 0, 200));
+}
+
+chip::app::Clusters::PowerSource::BatChargeLevelEnum matter_battery_charge_level(int mv)
+{
+    const int percent = battery_percent_from_mv(mv);
+    if (percent <= 10) {
+        return chip::app::Clusters::PowerSource::BatChargeLevelEnum::kCritical;
+    }
+    if (percent <= 25) {
+        return chip::app::Clusters::PowerSource::BatChargeLevelEnum::kWarning;
+    }
+    return chip::app::Clusters::PowerSource::BatChargeLevelEnum::kOk;
+}
+
+chip::app::Clusters::PowerSource::BatChargeStateEnum matter_battery_charge_state(BatteryChargeState state)
+{
+    switch (state) {
+    case BatteryChargeState::Charging:
+        return chip::app::Clusters::PowerSource::BatChargeStateEnum::kIsCharging;
+    case BatteryChargeState::Full:
+        return chip::app::Clusters::PowerSource::BatChargeStateEnum::kIsAtFullCharge;
+    case BatteryChargeState::NotCharging:
+        return chip::app::Clusters::PowerSource::BatChargeStateEnum::kIsNotCharging;
+    case BatteryChargeState::Unknown:
+    default:
+        return chip::app::Clusters::PowerSource::BatChargeStateEnum::kUnknown;
+    }
+}
+
 const char *battery_charge_state_text(BatteryChargeState state)
 {
     switch (state) {
@@ -1435,6 +1471,47 @@ esp_err_t update_pressure_measurement_null()
                   chip::app::Clusters::PressureMeasurement::Id,
                   chip::app::Clusters::PressureMeasurement::Attributes::MeasuredValue::Id,
                   &pressure_val);
+}
+
+esp_err_t update_power_source_battery()
+{
+    if (s_device.power_ep_id == 0 || s_device.battery_mv < 0) {
+        return ESP_OK;
+    }
+
+    esp_matter_attr_val_t voltage_val =
+        esp_matter_nullable_uint32(nullable<uint32_t>(static_cast<uint32_t>(s_device.battery_mv)));
+    ESP_RETURN_ON_ERROR(update(s_device.power_ep_id,
+                               chip::app::Clusters::PowerSource::Id,
+                               chip::app::Clusters::PowerSource::Attributes::BatVoltage::Id,
+                               &voltage_val),
+                        TAG,
+                        "Failed to publish battery voltage");
+
+    esp_matter_attr_val_t percent_val =
+        esp_matter_nullable_uint8(nullable<uint8_t>(matter_battery_percent_remaining(s_device.battery_mv)));
+    ESP_RETURN_ON_ERROR(update(s_device.power_ep_id,
+                               chip::app::Clusters::PowerSource::Id,
+                               chip::app::Clusters::PowerSource::Attributes::BatPercentRemaining::Id,
+                               &percent_val),
+                        TAG,
+                        "Failed to publish battery percent");
+
+    esp_matter_attr_val_t level_val =
+        esp_matter_enum8(chip::to_underlying(matter_battery_charge_level(s_device.battery_mv)));
+    ESP_RETURN_ON_ERROR(update(s_device.power_ep_id,
+                               chip::app::Clusters::PowerSource::Id,
+                               chip::app::Clusters::PowerSource::Attributes::BatChargeLevel::Id,
+                               &level_val),
+                        TAG,
+                        "Failed to publish battery charge level");
+
+    esp_matter_attr_val_t state_val =
+        esp_matter_enum8(chip::to_underlying(matter_battery_charge_state(s_device.battery_charge_state)));
+    return update(s_device.power_ep_id,
+                  chip::app::Clusters::PowerSource::Id,
+                  chip::app::Clusters::PowerSource::Attributes::BatChargeState::Id,
+                  &state_val);
 }
 
 uint16_t be16(const uint8_t msb, const uint8_t lsb)
@@ -2177,6 +2254,10 @@ void telemetry_task(void *)
             }
         }
         read_battery();
+        esp_err_t battery_err = update_power_source_battery();
+        if (battery_err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to publish battery attributes: %s", esp_err_to_name(battery_err));
+        }
 
         since_heartbeat_ms += kTelemetryPeriodMs;
         if (since_heartbeat_ms >= kHeartbeatPeriodMs) {
@@ -2459,15 +2540,52 @@ extern "C" void app_main(void)
         return;
     }
 
+    power_source::config_t power_config;
+    power_config.power_source.status =
+        chip::to_underlying(chip::app::Clusters::PowerSource::PowerSourceStatusEnum::kActive);
+    std::snprintf(power_config.power_source.description,
+                  sizeof(power_config.power_source.description),
+                  "M5StickC Plus2 battery");
+    power_config.power_source.feature_flags =
+        cluster::power_source::feature::battery::get_id() |
+        cluster::power_source::feature::rechargeable::get_id();
+    power_config.power_source.features.battery.bat_charge_level =
+        chip::to_underlying(matter_battery_charge_level(s_device.battery_mv));
+    power_config.power_source.features.battery.bat_replaceability =
+        chip::to_underlying(chip::app::Clusters::PowerSource::BatReplaceabilityEnum::kNotReplaceable);
+    power_config.power_source.features.rechargeable.bat_charge_state =
+        chip::to_underlying(matter_battery_charge_state(s_device.battery_charge_state));
+    power_config.power_source.features.rechargeable.bat_functional_while_charging = true;
+
+    endpoint_t *power_ep = power_source::create(node, &power_config, ENDPOINT_FLAG_NONE, nullptr);
+    if (!power_ep) {
+        ESP_LOGE(TAG, "Failed to create power_source endpoint");
+        return;
+    }
+    cluster_t *power_cluster = cluster::get(power_ep, chip::app::Clusters::PowerSource::Id);
+    if (!power_cluster) {
+        ESP_LOGE(TAG, "Failed to get power_source cluster");
+        return;
+    }
+    const nullable<uint32_t> initial_battery_voltage =
+        s_device.battery_mv >= 0 ? nullable<uint32_t>(static_cast<uint32_t>(s_device.battery_mv)) : nullable<uint32_t>();
+    const nullable<uint8_t> initial_battery_percent =
+        s_device.battery_mv >= 0 ? nullable<uint8_t>(matter_battery_percent_remaining(s_device.battery_mv)) : nullable<uint8_t>();
+    cluster::power_source::attribute::create_bat_voltage(power_cluster, initial_battery_voltage, nullable<uint32_t>(0), nullable<uint32_t>(0xFFFF));
+    cluster::power_source::attribute::create_bat_percent_remaining(power_cluster, initial_battery_percent, nullable<uint8_t>(0), nullable<uint8_t>(200));
+    cluster::power_source::attribute::create_bat_present(power_cluster, true);
+
     s_device.temp_ep_id = endpoint::get_id(temp_ep);
     s_device.button_ep_id = endpoint::get_id(button_ep);
     s_device.humidity_ep_id = endpoint::get_id(humidity_ep);
     s_device.pressure_ep_id = endpoint::get_id(pressure_ep);
-    ESP_LOGI(TAG, "Endpoints: temperature=%u button=%u humidity=%u pressure=%u",
+    s_device.power_ep_id = endpoint::get_id(power_ep);
+    ESP_LOGI(TAG, "Endpoints: temperature=%u button=%u humidity=%u pressure=%u power=%u",
              s_device.temp_ep_id,
              s_device.button_ep_id,
              s_device.humidity_ep_id,
-             s_device.pressure_ep_id);
+             s_device.pressure_ep_id,
+             s_device.power_ep_id);
 
     esp_matter::start(matter_event_callback);
 
