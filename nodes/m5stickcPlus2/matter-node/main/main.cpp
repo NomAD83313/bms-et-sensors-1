@@ -36,6 +36,7 @@
 #include <platform/CHIPDeviceLayer.h>
 #include <platform/CommissionableDataProvider.h>
 #include <platform/DeviceInstanceInfoProvider.h>
+#include <platform/ESP32/NetworkCommissioningDriver.h>
 #include <clusters/BooleanState/AttributeIds.h>
 #include <clusters/BooleanState/ClusterId.h>
 #include <clusters/BasicInformation/AttributeIds.h>
@@ -591,6 +592,42 @@ void log_commissioning_state(const char *reason)
              fabric_count > 0 ? "yes" : "no");
 }
 
+void clear_staged_wifi_network()
+{
+    namespace net_comm = chip::DeviceLayer::NetworkCommissioning;
+
+    net_comm::ESPWiFiDriver &wifi_driver = net_comm::ESPWiFiDriver::GetInstance();
+    net_comm::NetworkIterator *networks = wifi_driver.GetNetworks();
+    if (networks == nullptr) {
+        ESP_LOGW(TAG, "Unable to inspect staged Wi-Fi network before commissioning");
+        return;
+    }
+
+    net_comm::Network network;
+    while (networks->Next(network)) {
+        if (network.networkIDLen == 0) {
+            continue;
+        }
+
+        char debug_text_buffer[128] = {};
+        chip::MutableCharSpan debug_text(debug_text_buffer);
+        uint8_t network_index = 0;
+        const net_comm::Status status = wifi_driver.RemoveNetwork(
+            chip::ByteSpan(network.networkID, network.networkIDLen),
+            debug_text,
+            network_index);
+
+        if (status == net_comm::Status::kSuccess) {
+            ESP_LOGW(TAG, "Cleared staged Wi-Fi network before commissioning");
+        } else {
+            ESP_LOGW(TAG, "Failed to clear staged Wi-Fi network before commissioning: %u",
+                     static_cast<unsigned>(status));
+        }
+    }
+
+    networks->Release();
+}
+
 void quiesce_uncommissioned_wifi()
 {
     bool should_disconnect = false;
@@ -603,6 +640,7 @@ void quiesce_uncommissioned_wifi()
         }
 
         ESP_LOGW(TAG, "No fabric is present; clearing stale Wi-Fi STA provisioning before commissioning");
+        clear_staged_wifi_network();
         chip::DeviceLayer::ConnectivityMgr().ClearWiFiStationProvision();
 
         const CHIP_ERROR mode_err = chip::DeviceLayer::ConnectivityMgr().SetWiFiStationMode(
@@ -627,7 +665,10 @@ void hold_wifi_station_for_commissioning()
         return;
     }
 
-    ESP_LOGW(TAG, "Holding Wi-Fi station idle before commissioning window");
+    ESP_LOGW(TAG, "Clearing stale Wi-Fi provisioning and holding station idle before commissioning window");
+    clear_staged_wifi_network();
+    chip::DeviceLayer::ConnectivityMgr().ClearWiFiStationProvision();
+
     const CHIP_ERROR mode_err = chip::DeviceLayer::ConnectivityMgr().SetWiFiStationMode(
         chip::DeviceLayer::ConnectivityManager::kWiFiStationMode_ApplicationControlled);
     if (mode_err != CHIP_NO_ERROR) {
