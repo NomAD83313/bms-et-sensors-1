@@ -40,6 +40,7 @@ MATTER_WS_PING_INTERVAL_SEC = int(os.getenv("MATTER_WS_PING_INTERVAL_SEC", "20")
 MATTER_WS_PING_TIMEOUT_SEC = int(os.getenv("MATTER_WS_PING_TIMEOUT_SEC", "10"))
 MATTER_POLL_INTERVAL_SEC = float(os.getenv("MATTER_POLL_INTERVAL_SEC", "60"))
 MATTER_POLL_NODE_ID = int(os.getenv("MATTER_POLL_NODE_ID", "1"))
+MATTER_POLL_BATTERY_ENDPOINT_ID = int(os.getenv("MATTER_POLL_BATTERY_ENDPOINT_ID", "5"))
 MATTER_INFLUX_MEASUREMENT = os.getenv("MATTER_INFLUX_MEASUREMENT", "matter_sensor").strip() or "matter_sensor"
 MATTER_SOURCE_TAG = os.getenv("MATTER_SOURCE_TAG", "matter-server").strip() or "matter-server"
 INFLUX_URL = os.getenv("INFLUX_URL", "http://influxdb:8086").strip()
@@ -495,23 +496,39 @@ def _poll_node_snapshot_once() -> None:
 
     local_temp_centi = _read_attribute_once(MATTER_POLL_NODE_ID, "1/513/0")
     heat_setpoint_centi = _read_attribute_once(MATTER_POLL_NODE_ID, "1/513/18")
-    if not isinstance(local_temp_centi, (int, float)) and not isinstance(heat_setpoint_centi, (int, float)):
-        return
-
     fields: dict[str, float] = {}
     if isinstance(local_temp_centi, (int, float)):
         fields["thermostat_local_temperature_c"] = round(float(local_temp_centi) / 100.0, 2)
     if isinstance(heat_setpoint_centi, (int, float)):
         fields["thermostat_occupied_heating_setpoint_c"] = round(float(heat_setpoint_centi) / 100.0, 2)
+    if fields:
+        record = {
+            "event_type": "poll_snapshot",
+            "tags": {"node_id": str(MATTER_POLL_NODE_ID)},
+            "fields": fields,
+        }
+        _bump("events_received")
+        _set_state(last_message_at=time.time(), last_event_type="poll_snapshot")
+        _write_event(record)
 
-    record = {
-        "event_type": "poll_snapshot",
-        "tags": {"node_id": str(MATTER_POLL_NODE_ID)},
-        "fields": fields,
-    }
-    _bump("events_received")
-    _set_state(last_message_at=time.time(), last_event_type="poll_snapshot")
-    _write_event(record)
+    for attribute_id in (11, 12, 26):
+        attribute_path = f"{MATTER_POLL_BATTERY_ENDPOINT_ID}/47/{attribute_id}"
+        value = _read_attribute_once(MATTER_POLL_NODE_ID, attribute_path)
+        if not isinstance(value, (int, float)):
+            continue
+        record = {
+            "event_type": "poll_attribute",
+            "tags": {
+                "node_id": str(MATTER_POLL_NODE_ID),
+                "endpoint_id": str(MATTER_POLL_BATTERY_ENDPOINT_ID),
+                "cluster_id": "47",
+                "attribute_id": str(attribute_id),
+            },
+            "fields": {"value": float(value)},
+        }
+        _bump("events_received")
+        _set_state(last_message_at=time.time(), last_event_type="poll_attribute")
+        _write_event(record)
 
 
 def _poll_forever() -> None:

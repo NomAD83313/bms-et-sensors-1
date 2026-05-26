@@ -89,6 +89,31 @@ class MatterAppRouteTests(unittest.TestCase):
         self.assertEqual(snapshot, cached_snapshot)
         trigger_refresh.assert_called_once_with()
 
+    def test_poll_node_snapshot_writes_battery_attribute_records(self) -> None:
+        values = {
+            "1/513/0": None,
+            "1/513/18": None,
+            "5/47/11": 4162,
+            "5/47/12": 190,
+            "5/47/26": 3,
+        }
+
+        with (
+            patch.object(matter_app, "MATTER_POLL_INTERVAL_SEC", 60.0),
+            patch.object(matter_app, "MATTER_POLL_NODE_ID", 1),
+            patch.object(matter_app, "MATTER_POLL_BATTERY_ENDPOINT_ID", 5),
+            patch.object(matter_app, "_read_attribute_once", side_effect=lambda _node_id, path: values[path]),
+            patch.object(matter_app, "_write_event", return_value=True) as write_event,
+        ):
+            matter_app._poll_node_snapshot_once()
+
+        battery_records = [call.args[0] for call in write_event.call_args_list]
+        self.assertEqual(len(battery_records), 3)
+        self.assertEqual(battery_records[1]["event_type"], "poll_attribute")
+        self.assertEqual(battery_records[1]["tags"]["cluster_id"], "47")
+        self.assertEqual(battery_records[1]["tags"]["attribute_id"], "12")
+        self.assertEqual(battery_records[1]["fields"]["value"], 190.0)
+
     def test_standard_matter_command_route_proxies_advertised_command(self) -> None:
         with (
             patch.object(matter_app, "_node_supports_standard_command", return_value=True) as supports_command,

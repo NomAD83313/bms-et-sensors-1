@@ -164,7 +164,7 @@ def matter_battery_flux(*, bucket: str, measurement: str, start_expr: str, stop_
         f"from(bucket: {bucket_q})\n"
         + range_line(start_expr, stop_expr)
         + f"  |> filter(fn: (r) => r._measurement == {measurement_q})\n"
-        + '  |> filter(fn: (r) => r.event_type == "attribute_updated")\n'
+        + '  |> filter(fn: (r) => r.event_type == "attribute_updated" or r.event_type == "poll_attribute")\n'
         + '  |> filter(fn: (r) => r.cluster_id == "47")\n'
         + '  |> filter(fn: (r) => r.attribute_id == "12")\n'
         + '  |> filter(fn: (r) => r._field == "value")\n'

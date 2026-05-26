@@ -164,6 +164,7 @@ class GrafRedLabTagTests(unittest.TestCase):
             window="1s",
         )
 
+        self.assertIn('r.event_type == "attribute_updated" or r.event_type == "poll_attribute"', query)
         self.assertIn('r.cluster_id == "47"', query)
         self.assertIn('r.attribute_id == "12"', query)
         self.assertIn("_value: r._value / 2.0", query)
