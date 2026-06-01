@@ -23,8 +23,11 @@
 
 #include <app/server/Server.h>
 #include <app/TestEventTriggerDelegate.h>
+#include <app/clusters/boolean-state-server/boolean-state-cluster.h>
+#include <app/server-cluster/ServerClusterInterfaceRegistry.h>
 #include <credentials/DeviceAttestationCredsProvider.h>
 #include <credentials/examples/DeviceAttestationCredsExample.h>
+#include <data_model_provider/esp_matter_data_model_provider.h>
 #include <platform/CHIPDeviceLayer.h>
 #include <platform/DeviceInstanceInfoProvider.h>
 #include <clusters/BooleanState/AttributeIds.h>
@@ -355,11 +358,20 @@ esp_err_t update_temperature_measurement(float temperature_c)
 
 esp_err_t update_button_state(bool pressed)
 {
-    esp_matter_attr_val_t state_val = esp_matter_bool(pressed);
-    return update(s_device.button_ep_id,
-                  chip::app::Clusters::BooleanState::Id,
-                  chip::app::Clusters::BooleanState::Attributes::StateValue::Id,
-                  &state_val);
+    auto *cluster = esp_matter::data_model::provider::get_instance().registry().Get(
+        chip::app::ConcreteClusterPath(s_device.button_ep_id, chip::app::Clusters::BooleanState::Id));
+    if (!cluster) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    auto *boolean_state = static_cast<chip::app::Clusters::BooleanStateCluster *>(cluster);
+    esp_matter::lock::ScopedChipStackLock lock(portMAX_DELAY);
+    const bool previous = boolean_state->GetStateValue();
+    auto event_number = boolean_state->SetStateValue(pressed);
+    if (previous == pressed || event_number.has_value()) {
+        return ESP_OK;
+    }
+    return ESP_FAIL;
 }
 
 esp_err_t init_internal_temperature_sensor()
@@ -552,9 +564,7 @@ void button_task(void *)
     bool preview_factory_reset_set = false;
 
     s_device.button_pressed = reported_state;
-    if (update_button_state(reported_state) != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to publish initial button state");
-    }
+    ESP_LOGI(TAG, "BOOT button task ready, initial state=%d", static_cast<int>(reported_state));
 
     while (true) {
         const bool current_sample = read_boot_button_pressed();

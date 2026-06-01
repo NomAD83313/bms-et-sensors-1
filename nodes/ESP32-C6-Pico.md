@@ -1,11 +1,11 @@
 # ESP32-C6-Pico
 
-Matter over Thread firmware for the BMS DOA `ESP32-C6-Pico` node.
+Matter firmware variants for the BMS DOA `ESP32-C6-Pico` node.
 
 ## Hardware
 
 - Target: `ESP32-C6`, `4 MB` flash
-- Transport: Matter over Thread
+- Transport: Matter over Thread or Matter over Wi-Fi, depending on firmware directory
 - Commissioning: BLE
 - Native USB: `USB JTAG/serial`
 - RGB LED: onboard `WS2812` on `GPIO 8`
@@ -35,6 +35,8 @@ Practical meaning:
 
 ## Matter Identity
 
+Thread firmware (`esp32c6Pico/matter-thread-node`):
+
 - VendorID: `0xFFF1`
 - VendorName: `BMS DOA`
 - ProductID: `0x8003`
@@ -46,12 +48,23 @@ Practical meaning:
 - Discriminator: `3584 (0xE00)`
 - Serial: runtime `BMS-C6P-<MAC6>` from base MAC
 
+Wi-Fi firmware (`esp32c6Pico/matter-wifi-node`):
+
+- VendorID: `0xFFF1`
+- VendorName: `BMS DOA`
+- ProductID: `0x8007`
+- ProductName: `ESP32-C6-Pico WiFi`
+- SoftwareVersion: current git commit
+- Setup passcode: `20202021`
+- Discriminator: `3584 (0xE00)`
+- Serial: runtime `BMS-C6PW-<MAC6>` from base MAC
+
 Current lab node:
 
 - Serial: `BMS-C6P-53AC5C`
 - Matter node id after 2026-05-05 UI commissioning: `6`
-- Commissioned with Matter.js server via the external Realtek USB BLE adapter
-  (`0bda:8771`)
+- Commissioned with Matter.js server before the project switched to the
+  internal-`hci0` / no-BLE commissioning policy.
 
 ## Thread Mode
 
@@ -65,12 +78,12 @@ Why:
 
 Important commissioning note:
 
-- Use only the external standalone Realtek USB BLE adapter for Matter
-  commissioning.
-- Do not use the Raspberry Pi internal Cypress/Broadcom BLE adapter.
+- Use the Raspberry Pi internal `hci0` adapter for BLE commissioning.
+- For devices already reachable on IP, use no BLE and commission with
+  `network_only: true`.
 - Do not use the MediaTek `0e8d:7961` Wi-Fi/AP combo BLE adapter.
 - Start Matter services through `./scripts/restart-matter-server.sh` so the
-  Realtek HCI index is auto-detected and passed to Matter.js.
+  selected BLE mode is passed to Matter.js.
 
 2026-05-05 verification:
 
@@ -119,7 +132,7 @@ Current OTA layout:
 Build the OTA image with a clean build-local sdkconfig:
 
 ```bash
-cd esp32c6Pico/matter-node
+cd esp32c6Pico/matter-thread-node
 source /home/ets/.espressif/tools/activate_idf_v5.4.1.sh
 /home/ets/.espressif/tools/python/v5.4.1/venv/bin/python \
   /home/ets/.espressif/v5.4.1/esp-idf/tools/idf.py \
@@ -160,8 +173,11 @@ so this migration is intended to preserve existing pairing data.
 
 ## Important Files
 
-- `esp32c6Pico/matter-node/main/main.cpp`
-- `esp32c6Pico/matter-node/sdkconfig.defaults`
-- `esp32c6Pico/matter-node/CMakeLists.txt`
-- `esp32c6Pico/matter-node/tools/generate_onboarding_card.py`
-- `esp32c6Pico/matter-node/matter-node-card.png`
+- `esp32c6Pico/matter-thread-node/main/main.cpp`
+- `esp32c6Pico/matter-thread-node/sdkconfig.defaults`
+- `esp32c6Pico/matter-thread-node/CMakeLists.txt`
+- `esp32c6Pico/matter-thread-node/tools/generate_onboarding_card.py`
+- `esp32c6Pico/matter-thread-node/matter-node-card.png`
+- `esp32c6Pico/matter-wifi-node/main/main.cpp`
+- `esp32c6Pico/matter-wifi-node/sdkconfig.defaults`
+- `esp32c6Pico/matter-wifi-node/CMakeLists.txt`

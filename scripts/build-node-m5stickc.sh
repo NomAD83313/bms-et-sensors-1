@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-NODE_DIR="${PROJECT_ROOT}/nodes/esp32c6Pico/matter-thread-node"
+NODE_DIR="${PROJECT_ROOT}/nodes/m5stickc/matter-node"
 
 BUILD_TIMEOUT_SEC="${BUILD_TIMEOUT_SEC:-3600}"
 FIRMWARE_FULLCLEAN="${FIRMWARE_FULLCLEAN:-0}"
@@ -53,7 +53,7 @@ if [[ ! -d "${NODE_DIR}" ]]; then
 fi
 
 start_epoch="$(date +%s)"
-echo ">>> Building ESP32-C6-Pico firmware (timeout=${BUILD_TIMEOUT_SEC}s)..."
+echo ">>> Building M5StickC Matter firmware (timeout=${BUILD_TIMEOUT_SEC}s)..."
 
 set +e
 (
@@ -93,4 +93,5 @@ printf '>>> Firmware build ready in %02d:%02d:%02d\n' \
   "$((elapsed_sec / 3600))" \
   "$(((elapsed_sec % 3600) / 60))" \
   "$((elapsed_sec % 60))"
-echo ">>> App image: ${NODE_DIR}/build/esp32c6_pico_matter_node.bin"
+echo ">>> App image: ${NODE_DIR}/build/m5stickc_matter_node.bin"
+echo ">>> Matter OTA image: ${NODE_DIR}/build/m5stickc_matter_node-ota.bin"

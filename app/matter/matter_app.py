@@ -337,7 +337,7 @@ def _control_target_action(target: str, action: str) -> dict[str, Any]:
         return {
             "success": False,
             "error": "host_restart_required",
-            "details": "Start or restart matter-server with ./scripts/restart-matter-server.sh so the Realtek BLE adapter is re-detected before container recreation.",
+            "details": "Start or restart matter-server with ./scripts/restart-matter-server.sh so the selected BLE mode is applied before container recreation.",
         }
 
     actions: list[str] = []

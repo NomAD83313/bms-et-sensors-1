@@ -25,21 +25,23 @@ ESP32/Matter/Thread node workspace is included in this repository under `nodes`.
 
 ## Matter Server status
 
-`matter-server` commissioning is only stable in this project environment with a dedicated external USB BLE adapter.
+`matter-server` commissioning in this project supports only two BLE policies: Raspberry Pi internal `hci0`, or no BLE at all.
 
-- Use the tested Realtek USB BLE dongle (`0bda:8771`, Bluetooth address `8C:88:2B:24:32:8F`) for commissioning.
-- Do not use the Raspberry Pi internal Cypress BLE adapter or the MediaTek Wi-Fi/AP combo BLE adapter for commissioning.
-- Start Matter services via `./scripts/restart-matter-server.sh` so the current `hciN` index is resolved from the hardcoded Realtek adapter identity before container recreation.
+- Use `MATTER_BLE_MODE=internal ./scripts/restart-matter-server.sh` for BLE commissioning through internal `hci0`.
+- Use `MATTER_BLE_MODE=disabled ./scripts/restart-matter-server.sh` for IP-only commissioning of devices that are already reachable on the network.
+- Do not use an external USB BLE adapter in this workflow.
+- Start Matter services via `./scripts/restart-matter-server.sh` so the container is recreated with the intended `BLUETOOTH_ADAPTER` value.
 - Do not restart `matter-server` with raw `docker restart`; that preserves the old `BLUETOOTH_ADAPTER` value after Linux renumbers HCI devices.
 - For fresh or factory-reset Thread devices, call `commission_with_code` with the `MT:...` QR payload and without `network_only`.
   `network_only: true` disables BLE discovery and is only for devices already reachable on the IP network.
 
 Known BLE adapter policy:
 
-- Supported: external USB Realtek RTL8761BU (`0bda:8771`), verified with HAMA Smart Plug and ESP32-S-CAM commissioning.
-- Unsupported: Raspberry Pi internal Cypress/Broadcom BLE; it fails during BLE link establishment with HCI reason `0x3e`.
+- Supported: Raspberry Pi internal BLE as `hci0`.
+- Supported: no BLE (`MATTER_BLE_MODE=disabled`) for network-only commissioning.
+- Unsupported: external USB BLE adapters; this workflow intentionally avoids them.
 - Unsupported: MediaTek `0e8d:7961` Wi-Fi/AP combo BLE; it is not suitable for Matter commissioning in this stack.
-- Host setup disables the internal Raspberry Pi Bluetooth at boot; keep Matter commissioning on the external Realtek dongle.
+- Keep Wi-Fi connected during BLE tests; the restart script does not disconnect `wlan0` or `wlan1`.
 
 ## AI agent rules
 
@@ -51,8 +53,8 @@ Known BLE adapter policy:
 
 ### v6.5.7
 
-- Matter commissioning now uses the hardcoded tested Realtek BLE adapter (`0bda:8771`, Bluetooth address `8C:88:2B:24:32:8F`) and resolves its current `hciN` before recreating `matter-server`.
-- Internal Cypress BLE and MediaTek Wi-Fi/AP combo BLE are documented as unsupported for commissioning after repeated HCI-level failures.
+- Matter commissioning now uses either Raspberry Pi internal `hci0` or no BLE at all; the external USB BLE workflow is no longer used.
+- MediaTek Wi-Fi/AP combo BLE remains documented as unsupported for commissioning after repeated HCI-level failures.
 - ESP32-S-CAM Matter firmware no longer forces a second commissioning window after startup.
 - Raspberry Pi AP, Matter primary interface, and AP UI defaults now target `wlan1`.
 
@@ -181,9 +183,9 @@ Note:
   - keeps `mscl-collector` stopped while the configured MSCL base serial path is absent
   - starts `mscl-collector` only after the MSCL serial path is present and stable
   - uses `MSCL_PORT` first, then falls back to a `WSDA-Base-200` path in `/dev/serial/by-id`
-- Matter commissioning uses only the hardcoded Realtek USB BLE adapter (`0bda:8771`, Bluetooth address `8C:88:2B:24:32:8F`).
-  - Internal BLE fallback is disabled by design.
-  - Start Matter services via `./scripts/restart-matter-server.sh` so the current `hciN` index is resolved before container recreation.
+- Matter commissioning uses either internal `hci0` BLE or `MATTER_BLE_MODE=disabled` for network-only commissioning.
+  - External USB BLE is not used by design.
+  - Start Matter services via `./scripts/restart-matter-server.sh` so the selected BLE mode is applied before container recreation.
 
 - Build/restart all custom app services:
 
@@ -263,8 +265,8 @@ Use `config/pyrometers-devices.example.json` only as the tracked template:
 ```
 
 This rebuilds `matter-collector` only and does not touch `matter-server`; use
-`./scripts/restart-matter-server.sh` for Matter Server so the Realtek BLE
-adapter is re-detected first.
+`./scripts/restart-matter-server.sh` for Matter Server so the selected BLE mode
+is applied first.
 
 - Fast MSCL restart in dev mode (bind-mounted `./app/mscl`):
 
