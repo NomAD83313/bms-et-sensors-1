@@ -1,4 +1,5 @@
 #include "driver/gpio.h"
+#include "driver/i2c_master.h"
 #include "driver/temperature_sensor.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -37,6 +38,10 @@
 #include <clusters/PowerSource/AttributeIds.h>
 #include <clusters/PowerSource/ClusterId.h>
 #include <clusters/PowerSource/Enums.h>
+#include <clusters/PressureMeasurement/AttributeIds.h>
+#include <clusters/PressureMeasurement/ClusterId.h>
+#include <clusters/RelativeHumidityMeasurement/AttributeIds.h>
+#include <clusters/RelativeHumidityMeasurement/ClusterId.h>
 #include <clusters/TemperatureMeasurement/AttributeIds.h>
 #include <clusters/TemperatureMeasurement/ClusterId.h>
 #include <platform/ConnectivityManager.h>
@@ -45,6 +50,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 static const char *TAG = "bms_matter_node";
@@ -82,7 +88,10 @@ namespace {
 constexpr gpio_num_t kRgbLedGpio = static_cast<gpio_num_t>(BMS_RGB_LED_GPIO);
 constexpr gpio_num_t kBootButtonGpio = GPIO_NUM_0;
 constexpr gpio_num_t kBatteryAdcGpio = GPIO_NUM_3;
+constexpr gpio_num_t kBme280SdaGpio = GPIO_NUM_17;
+constexpr gpio_num_t kBme280SclGpio = GPIO_NUM_18;
 constexpr adc_channel_t kBatteryAdcChannel = ADC_CHANNEL_2;
+constexpr i2c_port_num_t kBme280I2cPort = I2C_NUM_0;
 constexpr uint32_t kTelemetryPeriodMs = 5000;
 constexpr uint32_t kHeartbeatPeriodMs = 30000;
 constexpr uint32_t kButtonPollPeriodMs = 50;
@@ -101,6 +110,12 @@ constexpr int kBatteryWarnMv = 3550;
 constexpr int kBatteryFullMv = 4200;
 constexpr int kBatteryChargingRiseMv = 6;
 constexpr int kBatteryChargingHoldMv = -2;
+constexpr uint32_t kBme280I2cSpeedHz = 100000;
+constexpr uint32_t kBme280I2cTimeoutMs = 100;
+constexpr uint8_t kBme280AddressLow = 0x76;
+constexpr uint8_t kBme280AddressHigh = 0x77;
+constexpr uint8_t kBme280ChipId = 0x60;
+constexpr int8_t kMatterPressureScale = -2;
 
 enum class IndicatorState : uint8_t {
     Boot,
@@ -120,11 +135,45 @@ enum class BatteryChargeState : uint8_t {
     Full,
 };
 
+struct Bme280Calibration {
+    uint16_t dig_t1 = 0;
+    int16_t dig_t2 = 0;
+    int16_t dig_t3 = 0;
+    uint16_t dig_p1 = 0;
+    int16_t dig_p2 = 0;
+    int16_t dig_p3 = 0;
+    int16_t dig_p4 = 0;
+    int16_t dig_p5 = 0;
+    int16_t dig_p6 = 0;
+    int16_t dig_p7 = 0;
+    int16_t dig_p8 = 0;
+    int16_t dig_p9 = 0;
+    uint8_t dig_h1 = 0;
+    int16_t dig_h2 = 0;
+    uint8_t dig_h3 = 0;
+    int16_t dig_h4 = 0;
+    int16_t dig_h5 = 0;
+    int8_t dig_h6 = 0;
+};
+
+struct Bme280Sample {
+    float temperature_c = 0.0f;
+    float humidity_pct = 0.0f;
+    float pressure_pa = 0.0f;
+};
+
 struct DeviceContext {
     uint16_t temp_ep_id = 0;
+    uint16_t humidity_ep_id = 0;
+    uint16_t pressure_ep_id = 0;
     uint16_t button_ep_id = 0;
     uint16_t power_ep_id = 0;
     temperature_sensor_handle_t temp_handle = nullptr;
+    i2c_master_bus_handle_t bme280_bus = nullptr;
+    i2c_master_dev_handle_t bme280_dev = nullptr;
+    Bme280Calibration bme280_cal = {};
+    bool bme280_available = false;
+    uint8_t bme280_addr = 0;
     adc_oneshot_unit_handle_t adc1_handle = nullptr;
     adc_cali_handle_t adc_cali_handle = nullptr;
     led_strip_handle_t led_strip = nullptr;
@@ -186,6 +235,24 @@ BmsNodeTestEventTriggerHandler s_bms_test_event_trigger_handler;
 
 // Matter spec: temperature in 0.01 °C units (int16_t)
 int16_t to_matter_temp(float celsius) { return static_cast<int16_t>(celsius * 100.0f); }
+
+// Matter spec: relative humidity in 0.01 %RH units (uint16_t)
+uint16_t to_matter_humidity(float humidity_pct)
+{
+    return static_cast<uint16_t>(std::clamp(humidity_pct * 100.0f, 0.0f, 10000.0f));
+}
+
+// Matter PressureMeasurement MeasuredValue uses kPa units.
+int16_t to_matter_pressure(float pressure_pa)
+{
+    return static_cast<int16_t>(std::clamp(pressure_pa / 1000.0f, -32768.0f, 32767.0f));
+}
+
+// Matter PressureMeasurement ScaledValue uses kPa * 10^-Scale units.
+int16_t to_matter_scaled_pressure(float pressure_pa)
+{
+    return static_cast<int16_t>(std::clamp(std::round(pressure_pa / 10.0f), -32768.0f, 32767.0f));
+}
 
 int battery_percent_from_mv(int mv)
 {
@@ -497,6 +564,41 @@ esp_err_t update_temperature_measurement(float temperature_c)
                   &temp_val);
 }
 
+esp_err_t update_humidity_measurement(float humidity_pct)
+{
+    if (s_device.humidity_ep_id == 0) {
+        return ESP_OK;
+    }
+    esp_matter_attr_val_t humidity_val = esp_matter_nullable_uint16(
+        nullable<uint16_t>(to_matter_humidity(humidity_pct)));
+    return update(s_device.humidity_ep_id,
+                  chip::app::Clusters::RelativeHumidityMeasurement::Id,
+                  chip::app::Clusters::RelativeHumidityMeasurement::Attributes::MeasuredValue::Id,
+                  &humidity_val);
+}
+
+esp_err_t update_pressure_measurement(float pressure_pa)
+{
+    if (s_device.pressure_ep_id == 0) {
+        return ESP_OK;
+    }
+    esp_matter_attr_val_t pressure_val = esp_matter_nullable_int16(
+        nullable<int16_t>(to_matter_pressure(pressure_pa)));
+    ESP_RETURN_ON_ERROR(update(s_device.pressure_ep_id,
+                               chip::app::Clusters::PressureMeasurement::Id,
+                               chip::app::Clusters::PressureMeasurement::Attributes::MeasuredValue::Id,
+                               &pressure_val),
+                        TAG,
+                        "Failed to update coarse pressure");
+
+    esp_matter_attr_val_t scaled_pressure_val = esp_matter_nullable_int16(
+        nullable<int16_t>(to_matter_scaled_pressure(pressure_pa)));
+    return update(s_device.pressure_ep_id,
+                  chip::app::Clusters::PressureMeasurement::Id,
+                  chip::app::Clusters::PressureMeasurement::Attributes::ScaledValue::Id,
+                  &scaled_pressure_val);
+}
+
 esp_err_t update_button_state(bool pressed)
 {
     auto *cluster = esp_matter::data_model::provider::get_instance().registry().Get(
@@ -561,6 +663,204 @@ esp_err_t init_internal_temperature_sensor()
     temperature_sensor_config_t temp_sensor_config = TEMPERATURE_SENSOR_CONFIG_DEFAULT(20, 80);
     ESP_RETURN_ON_ERROR(temperature_sensor_install(&temp_sensor_config, &s_device.temp_handle), TAG, "Failed to install temperature sensor");
     ESP_RETURN_ON_ERROR(temperature_sensor_enable(s_device.temp_handle), TAG, "Failed to enable temperature sensor");
+    return ESP_OK;
+}
+
+uint16_t le_u16(const uint8_t *data)
+{
+    return static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8);
+}
+
+int16_t le_s16(const uint8_t *data)
+{
+    return static_cast<int16_t>(le_u16(data));
+}
+
+esp_err_t bme280_write_u8(uint8_t reg, uint8_t value)
+{
+    const uint8_t data[2] = {reg, value};
+    return i2c_master_transmit(s_device.bme280_dev, data, sizeof(data), kBme280I2cTimeoutMs);
+}
+
+esp_err_t bme280_read(uint8_t reg, uint8_t *data, size_t len)
+{
+    return i2c_master_transmit_receive(s_device.bme280_dev, &reg, 1, data, len, kBme280I2cTimeoutMs);
+}
+
+void log_bme280_bytes(const char *label, const uint8_t *data, size_t len)
+{
+    char hex[128] = {};
+    size_t offset = 0;
+    for (size_t i = 0; i < len && offset < sizeof(hex); ++i) {
+        const int written = std::snprintf(hex + offset, sizeof(hex) - offset, "%s%02x", i == 0 ? "" : " ", data[i]);
+        if (written <= 0) {
+            break;
+        }
+        offset += static_cast<size_t>(written);
+    }
+    ESP_LOGI(TAG, "BME280 %s: %s", label, hex);
+}
+
+esp_err_t read_bme280_calibration()
+{
+    uint8_t calib1[26] = {};
+    uint8_t calib2[7] = {};
+    esp_err_t err = bme280_read(0x88, calib1, sizeof(calib1));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "BME280 temp/pressure calibration read failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    err = bme280_read(0xE1, calib2, sizeof(calib2));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "BME280 humidity calibration read failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    log_bme280_bytes("calib 0x88", calib1, sizeof(calib1));
+    log_bme280_bytes("calib 0xE1", calib2, sizeof(calib2));
+
+    Bme280Calibration cal = {};
+    cal.dig_t1 = le_u16(&calib1[0]);
+    cal.dig_t2 = le_s16(&calib1[2]);
+    cal.dig_t3 = le_s16(&calib1[4]);
+    cal.dig_p1 = le_u16(&calib1[6]);
+    cal.dig_p2 = le_s16(&calib1[8]);
+    cal.dig_p3 = le_s16(&calib1[10]);
+    cal.dig_p4 = le_s16(&calib1[12]);
+    cal.dig_p5 = le_s16(&calib1[14]);
+    cal.dig_p6 = le_s16(&calib1[16]);
+    cal.dig_p7 = le_s16(&calib1[18]);
+    cal.dig_p8 = le_s16(&calib1[20]);
+    cal.dig_p9 = le_s16(&calib1[22]);
+    cal.dig_h1 = calib1[25];
+    cal.dig_h2 = le_s16(&calib2[0]);
+    cal.dig_h3 = calib2[2];
+    cal.dig_h4 = static_cast<int16_t>((static_cast<int16_t>(calib2[3]) << 4) | (calib2[4] & 0x0F));
+    cal.dig_h5 = static_cast<int16_t>((static_cast<int16_t>(calib2[5]) << 4) | (calib2[4] >> 4));
+    cal.dig_h6 = static_cast<int8_t>(calib2[6]);
+
+    if (cal.dig_t1 == 0 || cal.dig_p1 == 0) {
+        ESP_LOGE(TAG,
+                 "BME280 invalid calibration: dig_t1=%u dig_p1=%u dig_h1=%u dig_h2=%d",
+                 cal.dig_t1,
+                 cal.dig_p1,
+                 cal.dig_h1,
+                 cal.dig_h2);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    ESP_LOGI(TAG,
+             "BME280 calibration ok: dig_t1=%u dig_p1=%u dig_h1=%u dig_h2=%d",
+             cal.dig_t1,
+             cal.dig_p1,
+             cal.dig_h1,
+             cal.dig_h2);
+    s_device.bme280_cal = cal;
+    return ESP_OK;
+}
+
+esp_err_t init_bme280()
+{
+    i2c_master_bus_config_t bus_config = {};
+    bus_config.i2c_port = kBme280I2cPort;
+    bus_config.sda_io_num = kBme280SdaGpio;
+    bus_config.scl_io_num = kBme280SclGpio;
+    bus_config.clk_source = I2C_CLK_SRC_DEFAULT;
+    bus_config.glitch_ignore_cnt = 7;
+    bus_config.flags.enable_internal_pullup = true;
+    ESP_RETURN_ON_ERROR(i2c_new_master_bus(&bus_config, &s_device.bme280_bus), TAG, "Failed to create BME280 I2C bus");
+
+    for (const uint8_t addr : {kBme280AddressLow, kBme280AddressHigh}) {
+        esp_err_t probe_err = i2c_master_probe(s_device.bme280_bus, addr, kBme280I2cTimeoutMs);
+        ESP_LOGI(TAG, "BME280 probe addr=0x%02x result=%s", addr, esp_err_to_name(probe_err));
+        if (probe_err != ESP_OK) {
+            continue;
+        }
+
+        i2c_device_config_t dev_config = {};
+        dev_config.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+        dev_config.device_address = addr;
+        dev_config.scl_speed_hz = kBme280I2cSpeedHz;
+        ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(s_device.bme280_bus, &dev_config, &s_device.bme280_dev),
+                            TAG,
+                            "Failed to add BME280 I2C device");
+
+        uint8_t chip_id = 0;
+        esp_err_t err = bme280_read(0xD0, &chip_id, 1);
+        ESP_LOGI(TAG, "BME280 chip id read addr=0x%02x result=%s chip_id=0x%02x", addr, esp_err_to_name(err), chip_id);
+        if (err == ESP_OK && chip_id == kBme280ChipId) {
+            s_device.bme280_addr = addr;
+            ESP_RETURN_ON_ERROR(bme280_write_u8(0xE0, 0xB6), TAG, "Failed to reset BME280");
+            vTaskDelay(pdMS_TO_TICKS(20));
+            ESP_RETURN_ON_ERROR(read_bme280_calibration(), TAG, "Failed to read BME280 calibration");
+            ESP_RETURN_ON_ERROR(bme280_write_u8(0xF2, 0x01), TAG, "Failed to configure BME280 humidity oversampling");
+            ESP_RETURN_ON_ERROR(bme280_write_u8(0xF5, 0xA0), TAG, "Failed to configure BME280 standby/filter");
+            ESP_RETURN_ON_ERROR(bme280_write_u8(0xF4, 0x27), TAG, "Failed to configure BME280 normal mode");
+            s_device.bme280_available = true;
+            ESP_LOGI(TAG, "BME280 configured on SDA GPIO%d SCL GPIO%d addr=0x%02x",
+                     static_cast<int>(kBme280SdaGpio),
+                     static_cast<int>(kBme280SclGpio),
+                     s_device.bme280_addr);
+            return ESP_OK;
+        }
+
+        ESP_LOGW(TAG, "I2C addr=0x%02x responded but chip id is 0x%02x", addr, chip_id);
+        i2c_master_bus_rm_device(s_device.bme280_dev);
+        s_device.bme280_dev = nullptr;
+    }
+
+    ESP_LOGW(TAG, "BME280 not found on SDA GPIO%d SCL GPIO%d",
+             static_cast<int>(kBme280SdaGpio),
+             static_cast<int>(kBme280SclGpio));
+    return ESP_ERR_NOT_FOUND;
+}
+
+esp_err_t read_bme280(Bme280Sample *sample)
+{
+    if (!s_device.bme280_available || !sample) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    uint8_t data[8] = {};
+    ESP_RETURN_ON_ERROR(bme280_read(0xF7, data, sizeof(data)), TAG, "Failed to read BME280 sample");
+
+    const int32_t adc_p = (static_cast<int32_t>(data[0]) << 12) | (static_cast<int32_t>(data[1]) << 4) | (data[2] >> 4);
+    const int32_t adc_t = (static_cast<int32_t>(data[3]) << 12) | (static_cast<int32_t>(data[4]) << 4) | (data[5] >> 4);
+    const int32_t adc_h = (static_cast<int32_t>(data[6]) << 8) | data[7];
+    const Bme280Calibration &cal = s_device.bme280_cal;
+
+    double var1 = (static_cast<double>(adc_t) / 16384.0 - static_cast<double>(cal.dig_t1) / 1024.0) * static_cast<double>(cal.dig_t2);
+    double var2 = ((static_cast<double>(adc_t) / 131072.0 - static_cast<double>(cal.dig_t1) / 8192.0) *
+                   (static_cast<double>(adc_t) / 131072.0 - static_cast<double>(cal.dig_t1) / 8192.0)) *
+                  static_cast<double>(cal.dig_t3);
+    const double t_fine = var1 + var2;
+    const double temperature_c = t_fine / 5120.0;
+
+    var1 = t_fine / 2.0 - 64000.0;
+    var2 = var1 * var1 * static_cast<double>(cal.dig_p6) / 32768.0;
+    var2 = var2 + var1 * static_cast<double>(cal.dig_p5) * 2.0;
+    var2 = var2 / 4.0 + static_cast<double>(cal.dig_p4) * 65536.0;
+    var1 = (static_cast<double>(cal.dig_p3) * var1 * var1 / 524288.0 + static_cast<double>(cal.dig_p2) * var1) / 524288.0;
+    var1 = (1.0 + var1 / 32768.0) * static_cast<double>(cal.dig_p1);
+    double pressure_pa = 0.0;
+    if (var1 != 0.0) {
+        pressure_pa = 1048576.0 - static_cast<double>(adc_p);
+        pressure_pa = (pressure_pa - var2 / 4096.0) * 6250.0 / var1;
+        var1 = static_cast<double>(cal.dig_p9) * pressure_pa * pressure_pa / 2147483648.0;
+        var2 = pressure_pa * static_cast<double>(cal.dig_p8) / 32768.0;
+        pressure_pa = pressure_pa + (var1 + var2 + static_cast<double>(cal.dig_p7)) / 16.0;
+    }
+
+    double humidity = t_fine - 76800.0;
+    humidity = (static_cast<double>(adc_h) - (static_cast<double>(cal.dig_h4) * 64.0 +
+                static_cast<double>(cal.dig_h5) / 16384.0 * humidity)) *
+               (static_cast<double>(cal.dig_h2) / 65536.0 *
+                (1.0 + static_cast<double>(cal.dig_h6) / 67108864.0 * humidity *
+                 (1.0 + static_cast<double>(cal.dig_h3) / 67108864.0 * humidity)));
+    humidity = humidity * (1.0 - static_cast<double>(cal.dig_h1) * humidity / 524288.0);
+    humidity = std::clamp(humidity, 0.0, 100.0);
+
+    sample->temperature_c = static_cast<float>(temperature_c);
+    sample->humidity_pct = static_cast<float>(humidity);
+    sample->pressure_pa = static_cast<float>(pressure_pa);
     return ESP_OK;
 }
 
@@ -755,16 +1055,37 @@ void telemetry_task(void *)
 {
     uint32_t since_heartbeat_ms = 0;
     while (true) {
-        float temperature_c = 0.0f;
-        esp_err_t err = temperature_sensor_get_celsius(s_device.temp_handle, &temperature_c);
+        Bme280Sample bme_sample = {};
+        esp_err_t err = read_bme280(&bme_sample);
         if (err == ESP_OK) {
-            ESP_LOGI(TAG, "Updating chip temperature: %.2fC", temperature_c);
-            err = update_temperature_measurement(temperature_c);
+            ESP_LOGI(TAG, "Updating BME280: %.2fC %.2f%%RH %.2fhPa",
+                     bme_sample.temperature_c,
+                     bme_sample.humidity_pct,
+                     bme_sample.pressure_pa / 100.0f);
+            err = update_temperature_measurement(bme_sample.temperature_c);
             if (err != ESP_OK) {
-                ESP_LOGW(TAG, "Failed to update temperature attribute: %s", esp_err_to_name(err));
+                ESP_LOGW(TAG, "Failed to update BME280 temperature attribute: %s", esp_err_to_name(err));
+            }
+            err = update_humidity_measurement(bme_sample.humidity_pct);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to update BME280 humidity attribute: %s", esp_err_to_name(err));
+            }
+            err = update_pressure_measurement(bme_sample.pressure_pa);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to update BME280 pressure attribute: %s", esp_err_to_name(err));
             }
         } else {
-            ESP_LOGW(TAG, "Failed to read chip temperature: %s", esp_err_to_name(err));
+            float temperature_c = 0.0f;
+            err = temperature_sensor_get_celsius(s_device.temp_handle, &temperature_c);
+            if (err == ESP_OK) {
+                ESP_LOGI(TAG, "Updating chip temperature fallback: %.2fC", temperature_c);
+                err = update_temperature_measurement(temperature_c);
+                if (err != ESP_OK) {
+                    ESP_LOGW(TAG, "Failed to update temperature attribute: %s", esp_err_to_name(err));
+                }
+            } else {
+                ESP_LOGW(TAG, "Failed to read chip temperature: %s", esp_err_to_name(err));
+            }
         }
 
         read_battery();
@@ -957,6 +1278,10 @@ extern "C" void app_main(void)
     }
 
     ESP_ERROR_CHECK(init_internal_temperature_sensor());
+    esp_err_t bme280_err = init_bme280();
+    if (bme280_err != ESP_OK) {
+        ESP_LOGW(TAG, "BME280 unavailable; internal temperature fallback remains active: %s", esp_err_to_name(bme280_err));
+    }
     ESP_ERROR_CHECK(init_battery_adc());
     read_battery();
     ESP_ERROR_CHECK(init_led_strip());
@@ -979,6 +1304,31 @@ extern "C" void app_main(void)
     endpoint_t *temp_ep = temperature_sensor::create(node, &temp_config, ENDPOINT_FLAG_NONE, nullptr);
     if (!temp_ep) {
         ESP_LOGE(TAG, "Failed to create temperature_sensor endpoint");
+        return;
+    }
+
+    humidity_sensor::config_t humidity_config;
+    endpoint_t *humidity_ep = humidity_sensor::create(node, &humidity_config, ENDPOINT_FLAG_NONE, nullptr);
+    if (!humidity_ep) {
+        ESP_LOGE(TAG, "Failed to create humidity_sensor endpoint");
+        return;
+    }
+
+    pressure_sensor::config_t pressure_config;
+    endpoint_t *pressure_ep = pressure_sensor::create(node, &pressure_config, ENDPOINT_FLAG_NONE, nullptr);
+    if (!pressure_ep) {
+        ESP_LOGE(TAG, "Failed to create pressure_sensor endpoint");
+        return;
+    }
+    cluster_t *pressure_cluster = cluster::get(pressure_ep, chip::app::Clusters::PressureMeasurement::Id);
+    if (!pressure_cluster) {
+        ESP_LOGE(TAG, "Failed to get pressure_measurement cluster");
+        return;
+    }
+    cluster::pressure_measurement::feature::extended::config_t pressure_extended_config;
+    pressure_extended_config.scale = kMatterPressureScale;
+    if (cluster::pressure_measurement::feature::extended::add(pressure_cluster, &pressure_extended_config) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to add pressure_measurement extended feature");
         return;
     }
 
@@ -1025,10 +1375,14 @@ extern "C" void app_main(void)
     cluster::power_source::attribute::create_bat_present(power_cluster, true);
 
     s_device.temp_ep_id = endpoint::get_id(temp_ep);
+    s_device.humidity_ep_id = endpoint::get_id(humidity_ep);
+    s_device.pressure_ep_id = endpoint::get_id(pressure_ep);
     s_device.button_ep_id = endpoint::get_id(button_ep);
     s_device.power_ep_id = endpoint::get_id(power_ep);
-    ESP_LOGI(TAG, "Endpoints: temperature=%u button=%u power=%u",
+    ESP_LOGI(TAG, "Endpoints: temperature=%u humidity=%u pressure=%u button=%u power=%u",
              s_device.temp_ep_id,
+             s_device.humidity_ep_id,
+             s_device.pressure_ep_id,
              s_device.button_ep_id,
              s_device.power_ep_id);
 

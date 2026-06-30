@@ -162,7 +162,7 @@ function parseSeriesTags(name) {
 }
 
 const matterNodeAliases = {
-  "14": "BMS-TES3-974744"
+  "15": "BMS-TES3-974744"
 };
 
 function prettyMatterName(rawName) {
@@ -175,6 +175,9 @@ function prettyMatterName(rawName) {
 
   const nodeLabel = matterNodeAliases[nodeId] || (nodeId ? `Matter N${nodeId}` : "Matter");
   if (clusterId === "1026") return `${nodeLabel} Temp`;
+  if (clusterId === "1029") return `${nodeLabel} Humidity`;
+  if (clusterId === "1027" && attributeId === "16") return `${nodeLabel} Pressure hPa`;
+  if (clusterId === "1027") return `${nodeLabel} Pressure coarse`;
   if (clusterId === "47" && (!attributeId || attributeId === "12")) return `${nodeLabel} Battery`;
   if (endpointId) return `${nodeLabel} EP${endpointId}`;
   return nodeLabel;

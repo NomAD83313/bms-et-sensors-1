@@ -53,6 +53,8 @@ def _build_ctx(**overrides):
                 "messkluppe_battery": [],
                 "messkluppe_temperatures": [],
                 "matter_temperature": [],
+                "matter_humidity": [],
+                "matter_pressure": [],
                 "matter_battery": [],
             },
             {
@@ -65,6 +67,8 @@ def _build_ctx(**overrides):
                 "messkluppe_battery": {"raw_cadence_ms": None},
                 "messkluppe_temperatures": {"raw_cadence_ms": None},
                 "matter_temperature": {"raw_cadence_ms": None},
+                "matter_humidity": {"raw_cadence_ms": None},
+                "matter_pressure": {"raw_cadence_ms": None},
                 "matter_battery": {"raw_cadence_ms": None},
             },
         )
@@ -110,6 +114,9 @@ def _build_ctx(**overrides):
         "load_messkluppe_battery_series_fn": lambda *_args: [],
         "load_messkluppe_temperature_series_fn": lambda *_args: [],
         "load_matter_series_fn": lambda *_args: [],
+        "load_matter_humidity_series_fn": lambda *_args: [],
+        "load_matter_pressure_series_fn": lambda *_args: [],
+        "load_matter_environment_series_fn": lambda *_args: [],
         "load_matter_battery_series_fn": lambda *_args: [],
         "panel_raw_cadence_ms_fn": lambda *_args: None,
         "build_single_export_response": build_single_export_response,

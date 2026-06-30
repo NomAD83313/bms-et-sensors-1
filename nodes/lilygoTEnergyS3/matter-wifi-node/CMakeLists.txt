@@ -86,7 +86,7 @@ add_custom_target(onboarding_card ALL
             --serial "BMS-TES3-<MAC6>"
             --firmware "${MATTER_NODE_GIT_COMMIT}"
             --product "LILYGO T-Energy-S3"
-            --endpoints "1 Temp, 2 Contact, 3 Battery"
+            --endpoints "1 Temp, 2 Humidity, 3 Pressure, 4 Contact, 5 Battery"
             --led-patterns "charger LED is hardware-only|external WS2812 optional via BMS_RGB_LED_GPIO|battery status exposed via Matter"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${ONBOARDING_CARD_OUTPUT}"
