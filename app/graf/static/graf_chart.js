@@ -161,6 +161,25 @@ function parseSeriesTags(name) {
   return tags;
 }
 
+const matterNodeAliases = {
+  "14": "BMS-TES3-974744"
+};
+
+function prettyMatterName(rawName) {
+  const {
+    node_id: nodeId = "",
+    endpoint_id: endpointId = "",
+    cluster_id: clusterId = "",
+    attribute_id: attributeId = ""
+  } = parseSeriesTags(rawName);
+
+  const nodeLabel = matterNodeAliases[nodeId] || (nodeId ? `Matter N${nodeId}` : "Matter");
+  if (clusterId === "1026") return `${nodeLabel} Temp`;
+  if (clusterId === "47" && (!attributeId || attributeId === "12")) return `${nodeLabel} Battery`;
+  if (endpointId) return `${nodeLabel} EP${endpointId}`;
+  return nodeLabel;
+}
+
 function redlabDeviceName(rawName) {
   const name = String(rawName || "").trim();
   if (!name.startsWith("redlab:")) return "";
@@ -201,9 +220,7 @@ function prettySeriesName(rawName) {
   }
   if (name.includes("_field=force_") && name.includes("clip_id=")) return prettyMesskluppeName(name);
   if (name.includes("source=matter-server") && name.includes("node_id=")) {
-    const { node_id: nodeId = "", endpoint_id: endpointId = "" } = parseSeriesTags(name);
-    if (nodeId && endpointId) return `Matter N${nodeId} EP${endpointId}`;
-    if (nodeId) return `Matter N${nodeId}`;
+    return prettyMatterName(name);
   }
   if (name.startsWith("redlab:")) {
     const rest = name.slice("redlab:".length);

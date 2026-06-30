@@ -12,6 +12,7 @@ Firmware workspace for BMS DOA Matter nodes.
 - `m5stickc/matter-node` - Matter over Wi-Fi node for first-generation `M5StickC`
 - `m5stickcPlus2/matter-node` - Matter over Wi-Fi node for `M5StickC Plus2`
 - `esp32sCam/camera-node` - Matter over Wi-Fi node for `ESP32-S-CAM` (camera runtime intentionally disabled)
+- `lilygoTEnergyS3/matter-wifi-node` - Matter over Wi-Fi node for `LILYGO T-Energy-S3`
 
 ## Documentation
 
@@ -23,6 +24,7 @@ Firmware workspace for BMS DOA Matter nodes.
 - [M5StickC](./M5StickC.md)
 - [M5StickC Plus2](./M5StickC-Plus2.md)
 - [ESP32-S-CAM](./ESP32-S-CAM.md)
+- [LILYGO T-Energy-S3](./LILYGO-T-Energy-S3.md)
 
 ## Shared Components
 

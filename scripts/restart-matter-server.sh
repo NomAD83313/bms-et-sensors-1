@@ -43,6 +43,26 @@ hci0_is_soft_blocked() {
   '
 }
 
+prepare_internal_ble_adapter() {
+  local prepare="${MATTER_INTERNAL_BLE_PREPARE:-1}"
+  if [[ "${prepare}" != "1" ]]; then
+    return 0
+  fi
+
+  echo ">>> Preparing internal BLE adapter hci0 without touching Wi-Fi interfaces..."
+  bluetoothctl scan off >/dev/null 2>&1 || true
+  bluetoothctl power on >/dev/null 2>&1 || true
+
+  if sudo -n true >/dev/null 2>&1; then
+    sudo -n rfkill unblock bluetooth
+    sudo -n hciconfig hci0 up
+    return 0
+  fi
+
+  rfkill unblock bluetooth >/dev/null 2>&1 || true
+  hciconfig hci0 up >/dev/null 2>&1 || true
+}
+
 load_env
 configure_matter_server_backend
 
@@ -55,12 +75,7 @@ case "${MATTER_BLE_MODE}" in
       exit 1
     fi
 
-    if [[ "${MATTER_INTERNAL_BLE_PREPARE:-0}" == "1" ]]; then
-      echo ">>> Preparing internal BLE adapter hci0 without touching Wi-Fi interfaces..."
-      sudo -n rfkill unblock bluetooth
-      sudo -n hciconfig hci0 up
-      bluetoothctl power on >/dev/null 2>&1 || true
-    fi
+    prepare_internal_ble_adapter
 
     if [[ "$(hci0_is_soft_blocked)" == "yes" ]]; then
       echo "ERROR: hci0 is soft-blocked. Run this once from a local shell:" >&2
