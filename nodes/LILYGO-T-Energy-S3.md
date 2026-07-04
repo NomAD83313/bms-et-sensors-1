@@ -55,13 +55,17 @@ Instead, it reduces active current while preserving normal Matter reachability:
 - BME280: forced-mode sample on telemetry tick, sleep between samples
 - Optional external RGB LED: slow steady-state refresh; disabled by default
 
-When the board is not charging, the firmware automatically enters a battery
-saver profile:
+When the USB Serial/JTAG host is not connected, the firmware automatically
+enters a battery saver profile:
 
 - ENV telemetry period: `120 s`
 - Heartbeat log period: `600 s`
 - BOOT button polling: slower cadence
 - Status LED updates: slower cadence when the RGB LED is present
+
+This matches the battery-powered operating mode on the board. If you need a
+true VBUS-powered decision instead of USB-host detection, the hardware needs a
+separate USB power sense signal.
 
 Changing `sdkconfig.defaults` affects clean builds. If an existing local
 `sdkconfig` was generated before this profile, remove or regenerate it before

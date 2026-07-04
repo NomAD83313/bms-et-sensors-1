@@ -15,6 +15,7 @@
 #include "esp_netif.h"
 #include "esp_pm.h"
 #include "esp_system.h"
+#include "driver/usb_serial_jtag.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"
 #include "freertos/FreeRTOS.h"
@@ -296,8 +297,7 @@ bool battery_is_low()
 
 bool battery_saver_active()
 {
-    return s_device.battery_charge_state == BatteryChargeState::Unknown ||
-           s_device.battery_charge_state == BatteryChargeState::NotCharging;
+    return !usb_serial_jtag_is_connected();
 }
 
 chip::app::Clusters::PowerSource::BatChargeLevelEnum matter_battery_charge_level(int mv)
