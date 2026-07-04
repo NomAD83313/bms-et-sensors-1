@@ -87,8 +87,11 @@ namespace {
 #ifndef BMS_RGB_LED_GPIO
 #define BMS_RGB_LED_GPIO -1
 #endif
-#ifndef BMS_TELEMETRY_PERIOD_MS
-#define BMS_TELEMETRY_PERIOD_MS 60000
+#ifndef BMS_USB_TELEMETRY_PERIOD_MS
+#define BMS_USB_TELEMETRY_PERIOD_MS 8000
+#endif
+#ifndef BMS_USB_HEARTBEAT_PERIOD_MS
+#define BMS_USB_HEARTBEAT_PERIOD_MS 60000
 #endif
 #ifndef BMS_HEARTBEAT_PERIOD_MS
 #define BMS_HEARTBEAT_PERIOD_MS 300000
@@ -107,7 +110,8 @@ constexpr gpio_num_t kBme280SdaGpio = GPIO_NUM_17;
 constexpr gpio_num_t kBme280SclGpio = GPIO_NUM_18;
 constexpr adc_channel_t kBatteryAdcChannel = ADC_CHANNEL_2;
 constexpr i2c_port_num_t kBme280I2cPort = I2C_NUM_0;
-constexpr uint32_t kTelemetryPeriodMs = BMS_TELEMETRY_PERIOD_MS;
+constexpr uint32_t kUsbTelemetryPeriodMs = BMS_USB_TELEMETRY_PERIOD_MS;
+constexpr uint32_t kUsbHeartbeatPeriodMs = BMS_USB_HEARTBEAT_PERIOD_MS;
 constexpr uint32_t kHeartbeatPeriodMs = BMS_HEARTBEAT_PERIOD_MS;
 constexpr uint32_t kBatterySaverTelemetryPeriodMs = BMS_BATTERY_SAVER_TELEMETRY_PERIOD_MS;
 constexpr uint32_t kBatterySaverHeartbeatPeriodMs = BMS_BATTERY_SAVER_HEARTBEAT_PERIOD_MS;
@@ -1151,9 +1155,9 @@ void telemetry_task(void *)
     while (true) {
         const bool saver_mode = battery_saver_active();
         const uint32_t telemetry_period_ms =
-            saver_mode ? kBatterySaverTelemetryPeriodMs : kTelemetryPeriodMs;
+            saver_mode ? kBatterySaverTelemetryPeriodMs : kUsbTelemetryPeriodMs;
         const uint32_t heartbeat_period_ms =
-            saver_mode ? kBatterySaverHeartbeatPeriodMs : kHeartbeatPeriodMs;
+            saver_mode ? kBatterySaverHeartbeatPeriodMs : kUsbHeartbeatPeriodMs;
         Bme280Sample bme_sample = {};
         esp_err_t err = read_bme280(&bme_sample);
         if (err == ESP_OK) {

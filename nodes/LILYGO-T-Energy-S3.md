@@ -48,8 +48,8 @@ useful field indicator, not a charger IC reading.
 This firmware keeps Matter over Wi-Fi online, so it does not use deep sleep.
 Instead, it reduces active current while preserving normal Matter reachability:
 
-- ENV telemetry period: `60 s` by default (`BMS_TELEMETRY_PERIOD_MS`)
-- Heartbeat log period: `300 s` by default (`BMS_HEARTBEAT_PERIOD_MS`)
+- USB-powered ENV telemetry period: `8 s` by default (`BMS_USB_TELEMETRY_PERIOD_MS`)
+- USB-powered heartbeat log period: `60 s` by default (`BMS_USB_HEARTBEAT_PERIOD_MS`)
 - Wi-Fi modem power save: enabled at runtime
 - ESP-IDF power management and tickless idle: enabled in `sdkconfig.defaults`
 - BME280: forced-mode sample on telemetry tick, sleep between samples
