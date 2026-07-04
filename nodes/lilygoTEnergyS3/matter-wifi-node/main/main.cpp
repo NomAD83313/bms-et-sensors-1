@@ -92,6 +92,12 @@ namespace {
 #ifndef BMS_HEARTBEAT_PERIOD_MS
 #define BMS_HEARTBEAT_PERIOD_MS 300000
 #endif
+#ifndef BMS_BATTERY_SAVER_TELEMETRY_PERIOD_MS
+#define BMS_BATTERY_SAVER_TELEMETRY_PERIOD_MS 120000
+#endif
+#ifndef BMS_BATTERY_SAVER_HEARTBEAT_PERIOD_MS
+#define BMS_BATTERY_SAVER_HEARTBEAT_PERIOD_MS 600000
+#endif
 
 constexpr gpio_num_t kRgbLedGpio = static_cast<gpio_num_t>(BMS_RGB_LED_GPIO);
 constexpr gpio_num_t kBootButtonGpio = GPIO_NUM_0;
@@ -102,7 +108,10 @@ constexpr adc_channel_t kBatteryAdcChannel = ADC_CHANNEL_2;
 constexpr i2c_port_num_t kBme280I2cPort = I2C_NUM_0;
 constexpr uint32_t kTelemetryPeriodMs = BMS_TELEMETRY_PERIOD_MS;
 constexpr uint32_t kHeartbeatPeriodMs = BMS_HEARTBEAT_PERIOD_MS;
+constexpr uint32_t kBatterySaverTelemetryPeriodMs = BMS_BATTERY_SAVER_TELEMETRY_PERIOD_MS;
+constexpr uint32_t kBatterySaverHeartbeatPeriodMs = BMS_BATTERY_SAVER_HEARTBEAT_PERIOD_MS;
 constexpr uint32_t kButtonPollPeriodMs = 100;
+constexpr uint32_t kBatterySaverButtonPollPeriodMs = 250;
 constexpr uint32_t kButtonDebounceMs = 30;
 constexpr uint32_t kCommissioningHoldMs = 7000;
 constexpr uint32_t kFactoryResetHoldMs = 15000;
@@ -283,6 +292,12 @@ uint8_t matter_battery_percent_remaining(int mv)
 bool battery_is_low()
 {
     return s_device.battery_mv > 0 && s_device.battery_mv <= kBatteryWarnMv;
+}
+
+bool battery_saver_active()
+{
+    return s_device.battery_charge_state == BatteryChargeState::Unknown ||
+           s_device.battery_charge_state == BatteryChargeState::NotCharging;
 }
 
 chip::app::Clusters::PowerSource::BatChargeLevelEnum matter_battery_charge_level(int mv)
@@ -568,6 +583,18 @@ uint32_t indicator_delay_ms(IndicatorState state)
 {
     if (!s_device.led_strip) {
         return 1000;
+    }
+    if (battery_saver_active()) {
+        switch (state) {
+        case IndicatorState::Running:
+            return 5000;
+        case IndicatorState::WiFiDisconnected:
+            return 1000;
+        case IndicatorState::Boot:
+            return 250;
+        default:
+            return 100;
+        }
     }
     switch (state) {
     case IndicatorState::Running:
@@ -1122,6 +1149,11 @@ void telemetry_task(void *)
 {
     uint32_t since_heartbeat_ms = 0;
     while (true) {
+        const bool saver_mode = battery_saver_active();
+        const uint32_t telemetry_period_ms =
+            saver_mode ? kBatterySaverTelemetryPeriodMs : kTelemetryPeriodMs;
+        const uint32_t heartbeat_period_ms =
+            saver_mode ? kBatterySaverHeartbeatPeriodMs : kHeartbeatPeriodMs;
         Bme280Sample bme_sample = {};
         esp_err_t err = read_bme280(&bme_sample);
         if (err == ESP_OK) {
@@ -1161,14 +1193,15 @@ void telemetry_task(void *)
             ESP_LOGW(TAG, "Failed to update battery attributes: %s", esp_err_to_name(err));
         }
 
-        since_heartbeat_ms += kTelemetryPeriodMs;
-        if (since_heartbeat_ms >= kHeartbeatPeriodMs) {
+        since_heartbeat_ms += telemetry_period_ms;
+        if (since_heartbeat_ms >= heartbeat_period_ms) {
             since_heartbeat_ms = 0;
             const uint32_t uptime_s =
                 (xTaskGetTickCount() - s_boot_tick) * portTICK_PERIOD_MS / 1000;
             ESP_LOGI(TAG,
-                     "Heartbeat: wifi_connected=%d commissioned=%d window_open=%d "
+                     "Heartbeat: saver=%d wifi_connected=%d commissioned=%d window_open=%d "
                      "battery=%dmV battery_percent=%d charge=%s free_heap=%u uptime_s=%u",
+                     static_cast<int>(saver_mode),
                      static_cast<int>(s_indicator.wifi_connected),
                      static_cast<int>(s_indicator.commissioned),
                      static_cast<int>(s_indicator.window_open),
@@ -1178,7 +1211,7 @@ void telemetry_task(void *)
                      static_cast<unsigned>(esp_get_free_heap_size()),
                      static_cast<unsigned>(uptime_s));
         }
-        vTaskDelay(pdMS_TO_TICKS(kTelemetryPeriodMs));
+        vTaskDelay(pdMS_TO_TICKS(telemetry_period_ms));
     }
 }
 
@@ -1197,6 +1230,8 @@ void button_task(void *)
     }
 
     while (true) {
+        const uint32_t poll_period_ms =
+            battery_saver_active() ? kBatterySaverButtonPollPeriodMs : kButtonPollPeriodMs;
         const bool current_sample = read_boot_button_pressed();
         const TickType_t now = xTaskGetTickCount();
 
@@ -1244,7 +1279,7 @@ void button_task(void *)
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(kButtonPollPeriodMs));
+        vTaskDelay(pdMS_TO_TICKS(poll_period_ms));
     }
 }
 
