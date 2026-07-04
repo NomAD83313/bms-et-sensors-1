@@ -13,7 +13,9 @@
 #include "esp_matter_providers.h"
 #include "esp_matter_test_event_trigger.h"
 #include "esp_netif.h"
+#include "esp_pm.h"
 #include "esp_system.h"
+#include "esp_wifi.h"
 #include "esp_wifi_default.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -84,6 +86,12 @@ namespace {
 #ifndef BMS_RGB_LED_GPIO
 #define BMS_RGB_LED_GPIO -1
 #endif
+#ifndef BMS_TELEMETRY_PERIOD_MS
+#define BMS_TELEMETRY_PERIOD_MS 60000
+#endif
+#ifndef BMS_HEARTBEAT_PERIOD_MS
+#define BMS_HEARTBEAT_PERIOD_MS 300000
+#endif
 
 constexpr gpio_num_t kRgbLedGpio = static_cast<gpio_num_t>(BMS_RGB_LED_GPIO);
 constexpr gpio_num_t kBootButtonGpio = GPIO_NUM_0;
@@ -92,9 +100,9 @@ constexpr gpio_num_t kBme280SdaGpio = GPIO_NUM_17;
 constexpr gpio_num_t kBme280SclGpio = GPIO_NUM_18;
 constexpr adc_channel_t kBatteryAdcChannel = ADC_CHANNEL_2;
 constexpr i2c_port_num_t kBme280I2cPort = I2C_NUM_0;
-constexpr uint32_t kTelemetryPeriodMs = 5000;
-constexpr uint32_t kHeartbeatPeriodMs = 30000;
-constexpr uint32_t kButtonPollPeriodMs = 50;
+constexpr uint32_t kTelemetryPeriodMs = BMS_TELEMETRY_PERIOD_MS;
+constexpr uint32_t kHeartbeatPeriodMs = BMS_HEARTBEAT_PERIOD_MS;
+constexpr uint32_t kButtonPollPeriodMs = 100;
 constexpr uint32_t kButtonDebounceMs = 30;
 constexpr uint32_t kCommissioningHoldMs = 7000;
 constexpr uint32_t kFactoryResetHoldMs = 15000;
@@ -112,6 +120,8 @@ constexpr int kBatteryChargingRiseMv = 6;
 constexpr int kBatteryChargingHoldMv = -2;
 constexpr uint32_t kBme280I2cSpeedHz = 100000;
 constexpr uint32_t kBme280I2cTimeoutMs = 100;
+constexpr uint32_t kBme280ForcedConversionDelayMs = 20;
+constexpr uint8_t kBme280ForcedConversionPolls = 5;
 constexpr uint8_t kBme280AddressLow = 0x76;
 constexpr uint8_t kBme280AddressHigh = 0x77;
 constexpr uint8_t kBme280ChipId = 0x60;
@@ -554,6 +564,21 @@ void render_indicator(IndicatorState state, uint32_t tick_ms)
     }
 }
 
+uint32_t indicator_delay_ms(IndicatorState state)
+{
+    if (!s_device.led_strip) {
+        return 1000;
+    }
+    switch (state) {
+    case IndicatorState::Running:
+        return 1000;
+    case IndicatorState::WiFiDisconnected:
+        return 250;
+    default:
+        return kIndicatorPeriodMs;
+    }
+}
+
 esp_err_t update_temperature_measurement(float temperature_c)
 {
     esp_matter_attr_val_t temp_val = esp_matter_nullable_int16(
@@ -792,8 +817,8 @@ esp_err_t init_bme280()
             vTaskDelay(pdMS_TO_TICKS(20));
             ESP_RETURN_ON_ERROR(read_bme280_calibration(), TAG, "Failed to read BME280 calibration");
             ESP_RETURN_ON_ERROR(bme280_write_u8(0xF2, 0x01), TAG, "Failed to configure BME280 humidity oversampling");
-            ESP_RETURN_ON_ERROR(bme280_write_u8(0xF5, 0xA0), TAG, "Failed to configure BME280 standby/filter");
-            ESP_RETURN_ON_ERROR(bme280_write_u8(0xF4, 0x27), TAG, "Failed to configure BME280 normal mode");
+            ESP_RETURN_ON_ERROR(bme280_write_u8(0xF5, 0x00), TAG, "Failed to configure BME280 standby/filter");
+            ESP_RETURN_ON_ERROR(bme280_write_u8(0xF4, 0x24), TAG, "Failed to configure BME280 sleep mode");
             s_device.bme280_available = true;
             ESP_LOGI(TAG, "BME280 configured on SDA GPIO%d SCL GPIO%d addr=0x%02x",
                      static_cast<int>(kBme280SdaGpio),
@@ -817,6 +842,17 @@ esp_err_t read_bme280(Bme280Sample *sample)
 {
     if (!s_device.bme280_available || !sample) {
         return ESP_ERR_INVALID_STATE;
+    }
+
+    ESP_RETURN_ON_ERROR(bme280_write_u8(0xF4, 0x25), TAG, "Failed to trigger BME280 forced sample");
+    vTaskDelay(pdMS_TO_TICKS(kBme280ForcedConversionDelayMs));
+    for (uint8_t i = 0; i < kBme280ForcedConversionPolls; ++i) {
+        uint8_t status = 0;
+        ESP_RETURN_ON_ERROR(bme280_read(0xF3, &status, 1), TAG, "Failed to read BME280 status");
+        if ((status & 0x08) == 0) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(kBme280ForcedConversionDelayMs));
     }
 
     uint8_t data[8] = {};
@@ -1011,6 +1047,36 @@ void schedule_factory_reset()
     chip::Server::GetInstance().ScheduleFactoryReset();
 }
 
+esp_err_t init_power_management()
+{
+#if CONFIG_PM_ENABLE
+    esp_pm_config_t pm_config = {
+        .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+        .min_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+#if CONFIG_FREERTOS_USE_TICKLESS_IDLE
+        .light_sleep_enable = true,
+#else
+        .light_sleep_enable = false,
+#endif
+    };
+    ESP_RETURN_ON_ERROR(esp_pm_configure(&pm_config), TAG, "Failed to configure ESP power management");
+    ESP_LOGI(TAG, "ESP power management enabled (light_sleep=%d)", static_cast<int>(pm_config.light_sleep_enable));
+#else
+    ESP_LOGI(TAG, "ESP power management disabled by sdkconfig");
+#endif
+    return ESP_OK;
+}
+
+void enable_wifi_power_save()
+{
+    const esp_err_t ret = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Wi-Fi modem power save request failed: %s", esp_err_to_name(ret));
+        return;
+    }
+    ESP_LOGI(TAG, "Wi-Fi modem power save enabled");
+}
+
 esp_err_t init_test_event_trigger_delegate()
 {
     CHIP_ERROR err = s_test_event_trigger_delegate.Init(chip::ByteSpan(s_test_event_enable_key));
@@ -1046,8 +1112,9 @@ void indicator_task(void *)
             last = state;
         }
         render_indicator(state, tick_ms);
-        vTaskDelay(pdMS_TO_TICKS(kIndicatorPeriodMs));
-        tick_ms += kIndicatorPeriodMs;
+        const uint32_t delay_ms = indicator_delay_ms(state);
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
+        tick_ms += delay_ms;
     }
 }
 
@@ -1387,6 +1454,8 @@ extern "C" void app_main(void)
              s_device.power_ep_id);
 
     esp_matter::start(matter_event_callback);
+    ESP_ERROR_CHECK(init_power_management());
+    enable_wifi_power_save();
 
     update_network_state_cache();
     log_commissioning_state("after-start");

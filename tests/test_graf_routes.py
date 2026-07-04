@@ -55,6 +55,8 @@ def _build_ctx(**overrides):
                 "matter_temperature": [],
                 "matter_humidity": [],
                 "matter_pressure": [],
+                "matter_pm": [],
+                "matter_iso14644_estimate": [],
                 "matter_battery": [],
             },
             {
@@ -69,6 +71,8 @@ def _build_ctx(**overrides):
                 "matter_temperature": {"raw_cadence_ms": None},
                 "matter_humidity": {"raw_cadence_ms": None},
                 "matter_pressure": {"raw_cadence_ms": None},
+                "matter_pm": {"raw_cadence_ms": None},
+                "matter_iso14644_estimate": {"raw_cadence_ms": None},
                 "matter_battery": {"raw_cadence_ms": None},
             },
         )
@@ -116,6 +120,8 @@ def _build_ctx(**overrides):
         "load_matter_series_fn": lambda *_args: [],
         "load_matter_humidity_series_fn": lambda *_args: [],
         "load_matter_pressure_series_fn": lambda *_args: [],
+        "load_matter_pm_series_fn": lambda *_args: [],
+        "load_matter_iso14644_estimate_series_fn": lambda *_args: [],
         "load_matter_environment_series_fn": lambda *_args: [],
         "load_matter_battery_series_fn": lambda *_args: [],
         "panel_raw_cadence_ms_fn": lambda *_args: None,

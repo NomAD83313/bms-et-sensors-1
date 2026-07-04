@@ -17,6 +17,8 @@ class GrafViewsTests(unittest.TestCase):
         self.assertTrue(cfg["show_matter"])
         self.assertTrue(cfg["show_matter_humidity"])
         self.assertTrue(cfg["show_matter_pressure"])
+        self.assertTrue(cfg["show_matter_pm"])
+        self.assertTrue(cfg["show_matter_iso14644_estimate"])
         self.assertTrue(cfg["show_matter_battery"])
 
     def test_all_view_includes_messkluppe_panel(self):
@@ -28,6 +30,8 @@ class GrafViewsTests(unittest.TestCase):
         self.assertTrue(cfg["show_messkluppe_temperatures"])
         self.assertTrue(cfg["show_matter_humidity"])
         self.assertTrue(cfg["show_matter_pressure"])
+        self.assertTrue(cfg["show_matter_pm"])
+        self.assertTrue(cfg["show_matter_iso14644_estimate"])
         self.assertTrue(cfg["show_matter_battery"])
 
     def test_messkluppe_view_uses_force_orientation_and_battery_windows(self):

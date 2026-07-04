@@ -23,12 +23,16 @@ Connected lab board:
 ## Device Model
 
 - Endpoint `1`: `Temperature Sensor`
-- Endpoint `2`: `Contact Sensor`
-- Endpoint `3`: `Power Source`
+- Endpoint `2`: `Relative Humidity Sensor`
+- Endpoint `3`: `Pressure Sensor`
+- Endpoint `4`: `Contact Sensor`
+- Endpoint `5`: `Power Source`
 
-The temperature endpoint reports the ESP32-S3 internal temperature sensor. The
-contact endpoint reports the BOOT button state. The power source endpoint
-reports battery voltage, percentage, presence, charge level, and charge state.
+The temperature, humidity, and pressure endpoints report the BME280 sensor when
+it is present. If the BME280 is unavailable, the temperature endpoint falls back
+to the ESP32-S3 internal temperature sensor. The contact endpoint reports the
+BOOT button state. The power source endpoint reports battery voltage,
+percentage, presence, charge level, and charge state.
 
 Battery percent is a simple Li-ion estimate:
 
@@ -38,6 +42,22 @@ Battery percent is a simple Li-ion estimate:
 
 Charge state is inferred from voltage rise between telemetry samples. It is a
 useful field indicator, not a charger IC reading.
+
+## Battery Runtime Profile
+
+This firmware keeps Matter over Wi-Fi online, so it does not use deep sleep.
+Instead, it reduces active current while preserving normal Matter reachability:
+
+- ENV telemetry period: `60 s` by default (`BMS_TELEMETRY_PERIOD_MS`)
+- Heartbeat log period: `300 s` by default (`BMS_HEARTBEAT_PERIOD_MS`)
+- Wi-Fi modem power save: enabled at runtime
+- ESP-IDF power management and tickless idle: enabled in `sdkconfig.defaults`
+- BME280: forced-mode sample on telemetry tick, sleep between samples
+- Optional external RGB LED: slow steady-state refresh; disabled by default
+
+Changing `sdkconfig.defaults` affects clean builds. If an existing local
+`sdkconfig` was generated before this profile, remove or regenerate it before
+measuring battery life.
 
 ## LED Indication
 

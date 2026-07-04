@@ -97,6 +97,8 @@ def register_routes(app, ctx: dict):
             load_matter_series_fn=ctx["load_matter_series_fn"],
             load_matter_humidity_series_fn=ctx["load_matter_humidity_series_fn"],
             load_matter_pressure_series_fn=ctx["load_matter_pressure_series_fn"],
+            load_matter_pm_series_fn=ctx["load_matter_pm_series_fn"],
+            load_matter_iso14644_estimate_series_fn=ctx["load_matter_iso14644_estimate_series_fn"],
             load_matter_battery_series_fn=ctx["load_matter_battery_series_fn"],
             panel_raw_cadence_ms_fn=ctx["panel_raw_cadence_ms_fn"],
         )
