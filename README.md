@@ -11,10 +11,10 @@ Docker stack for sensor data acquisition and visualization:
 - `ap-control`: Raspberry Pi access point operator UI for AP state and connected clients.
 - `service-controller`: lightweight control API to start/stop selected service groups from dashboard; guards MSCL, RedLab, and ALMEMO hardware presence.
 - `dashboard`: lightweight start page based on `simple-dash`, served by `nginx`.
-- `matter-server`: Python Matter Server (Nabu Casa) for controlled Matter diagnostics and collection.
+- `matter-server`: Matter.js Server for controlled Matter diagnostics and collection.
 - `matter-collector`: collector that bridges Matter events to InfluxDB.
 - `openthread-border-router`: Border Router for Thread mesh (requires OpenThread RCP, USB or network socket).
-- `messkluppe-collector`: legacy Messkluppe host-side collector scaffold; decodes nRF24 binary payloads and writes InfluxDB records, with fake mode available before node hardware is connected.
+- `messkluppe-collector`: Messkluppe host-side collector; decodes nRF24 binary payloads and writes InfluxDB records, with fake mode available before node hardware is connected.
 
 The repository includes Matter/Thread stack documentation:
 
@@ -48,58 +48,6 @@ Known BLE adapter policy:
 - `AGENTS.md` in the project root is the canonical rule file for Codex.
 - Keep Codex-specific project conventions and workflow constraints in `AGENTS.md`.
 - Keep the file concise enough to stay within Codex loading limits (current practical target: well below 32 KiB).
-
-## Release notes
-
-### v8.0.13
-
-- Added ESP32-C6 Pico Matter over Wi-Fi firmware for the connected Sensirion SPS30 over UART.
-- Added SPS30 particulate matter polling and Graf Lite visualization for Matter PM1.0, PM2.5, and PM10 values.
-- Raspberry Pi radio defaults now use built-in `wlan0` for the `BMSensors` access point and detachable USB `wlan1` for the internet client uplink.
-- Updated Matter/Thread/AP defaults so OTBR, Matter primary interface, and AP UI follow the `wlan0` access point layout.
-- Documented Messkluppe `.env.example` defaults while keeping local `.env` secrets and runtime values untracked.
-
-### v6.5.7
-
-- Matter commissioning now uses either Raspberry Pi internal `hci0` or no BLE at all; the external USB BLE workflow is no longer used.
-- MediaTek Wi-Fi/AP combo BLE remains documented as unsupported for commissioning after repeated HCI-level failures.
-- ESP32-S-CAM Matter firmware no longer forces a second commissioning window after startup.
-- Raspberry Pi AP, Matter primary interface, and AP UI defaults now target `wlan0`.
-
-### v6.5.0
-
-- Added `ap-control` at `/ap/` for Raspberry Pi AP control, connected-client inspection, signal/RX/TX metrics, and DHCP hostname display.
-- Dashboard section `Wlan / Matter / Thread` now links to `AP Control`.
-- Matter + Thread Console top navigation now includes a direct `Matter Graf 5m` shortcut to `/graf/matter?range=5m`.
-- Thread child association rules were simplified into a single ordered inference pass, preserving stable Pico matching for `rloc-only` OTBR children.
-
-### v6.4.4
-
-- Thread topology tree now shows colored Matter `node xx` badges for matched routers and children.
-- Router-child links can reuse RSSI/LQI from the router Matter NeighborTable, so children behind `BMS-C6CH-499B30` keep signal data even when OTBR meshdiag only reports LQI.
-- Upstream OTBR-router links now prefer the richest OTBR neighbor edge, preserving RSSI between the border router and the router when multiple evidence edges exist.
-- Quarantined child matching now ignores trusted sibling RLOC-only children under the same parent, keeping the Pico association stable after node re-pairing.
-
-### v6.4.3
-
-- Matter Thread topology now uses the new Matter Server + OTBR evidence model as the canonical `/thread-topology` endpoint.
-- Removed the legacy topology/debug endpoints and side-by-side UI comparison so the console shows a single inferred topology tree.
-- Added inferred matching for quarantined Matter Thread nodes using OTBR parent-child/router evidence while preserving duplicate reported-address warnings.
-
-### v4.1.0
-
-- `Sensor Info` now uses a compact ALMEMO fast overview sequence: `G00`, `Mxx`, `f2 P00`, `P32`.
-- Peak-related reads (`P02`, `P03`, `P28`, `P29`) were removed from the button path and documented as manual commands in the UI help.
-- No-live timing improved after the change, with the biggest gain on `Sensor Info` (`5.510s` -> `3.834s`).
-- The next large speed gains, if needed later, are more likely to come from serial-session mechanics than from changing ALMEMO read commands again.
-
-### v4.0.4
-
-- `almemo-collector` now executes multi-step interactive UI actions as a single guarded server-side batch via `/api/command-sequence`.
-- ALMEMO serial handling now sends explicit `XON` after buffer resets and after stream-to-command session rearm, preventing the observed V6 `XOFF` freeze / reconnect loop.
-- Tested UI flows no longer reproduced cable/device dropouts during `Print Cycle`, `Continuous Query`, `Sensor Info`, smoothing writes, and time/date writes.
-- Remaining known issue: response time is still noticeably slower while live data streaming is active; without live data the same ALMEMO actions are significantly faster.
-- After rebuilding `almemo-collector`, use a hard browser refresh so the updated `ui.js` is loaded.
 
 ## Requirements
 
@@ -381,29 +329,6 @@ Shared InfluxDB tag style:
 - `AP_CHANNEL`
 - `AP_LOCAL_DNS_ENABLE`
 - `AP_LOCAL_DNS_NAME`
-
-### Removed legacy env variables
-These keys are now hard-coded inside the stack and should not be added back to `.env` unless the code changes:
-- `INFLUX_URL`
-- `GRAFANA_ROOT_URL`
-- `MQTT_PORT`
-- `TZ`
-- `GRAF_APP_MSCL_CHANNEL`
-- `GRAF_APP_REDLAB_MEASUREMENT`
-- `TEMP_MIN`
-- `REDLAB_HEALTH_PORT`
-- `MSCL_MEASUREMENT`
-- `MSCL_SOURCE_RADIO_TAG`
-- `MSCL_SOURCE_NODE_EXPORT_TAG`
-- `SVCCTL_REDLAB_GUARD_ENABLED`
-- `SVCCTL_REDLAB_GUARD_INTERVAL_SEC`
-- `SVCCTL_REDLAB_USB_VENDOR_ID`
-- `SVCCTL_REDLAB_USB_PRODUCT_ID`
-- `SVCCTL_REDLAB_USB_STABLE_SEC`
-
-These older removed keys are not used by the current stack:
-- `GRAFANA_ACCESS_ADDRESS`
-- `GRAF_APP_PORT`
 
 ## Containers and addresses
 
