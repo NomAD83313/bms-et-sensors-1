@@ -51,6 +51,14 @@ Known BLE adapter policy:
 
 ## Release notes
 
+### v8.0.13
+
+- Added ESP32-C6 Pico Matter over Wi-Fi firmware for the connected Sensirion SPS30 over UART.
+- Added SPS30 particulate matter polling and Graf Lite visualization for Matter PM1.0, PM2.5, and PM10 values.
+- Raspberry Pi radio defaults now use built-in `wlan0` for the `BMSensors` access point and detachable USB `wlan1` for the internet client uplink.
+- Updated Matter/Thread/AP defaults so OTBR, Matter primary interface, and AP UI follow the `wlan0` access point layout.
+- Documented Messkluppe `.env.example` defaults while keeping local `.env` secrets and runtime values untracked.
+
 ### v6.5.7
 
 - Matter commissioning now uses either Raspberry Pi internal `hci0` or no BLE at all; the external USB BLE workflow is no longer used.
