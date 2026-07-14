@@ -17,7 +17,6 @@ _PANEL_ORDER: list[tuple[str, str]] = [
     ("show_matter_humidity", "c11"),
     ("show_matter_pressure", "c12"),
     ("show_matter_pm", "c13"),
-    ("show_matter_iso14644_estimate", "c14"),
 ]
 
 VIEW_CONFIGS: dict[str, dict[str, Any]] = {
@@ -29,7 +28,6 @@ VIEW_CONFIGS: dict[str, dict[str, Any]] = {
         "show_matter_humidity": True,
         "show_matter_pressure": True,
         "show_matter_pm": True,
-        "show_matter_iso14644_estimate": True,
         "show_almemo": True,
         "show_pyrometers": True,
         "show_messkluppe": True,
@@ -112,7 +110,6 @@ VIEW_CONFIGS: dict[str, dict[str, Any]] = {
         "show_matter_humidity": True,
         "show_matter_pressure": True,
         "show_matter_pm": True,
-        "show_matter_iso14644_estimate": True,
         "show_matter_battery": True,
         "show_almemo": False,
         "show_pyrometers": False,
@@ -173,7 +170,6 @@ def render_index(
         show_matter_humidity=bool(cfg.get("show_matter_humidity", False)),
         show_matter_pressure=bool(cfg.get("show_matter_pressure", False)),
         show_matter_pm=bool(cfg.get("show_matter_pm", False)),
-        show_matter_iso14644_estimate=bool(cfg.get("show_matter_iso14644_estimate", False)),
         show_matter_battery=bool(cfg.get("show_matter_battery", False)),
         show_almemo=bool(cfg.get("show_almemo", False)),
         show_pyrometers=bool(cfg.get("show_pyrometers", False)),

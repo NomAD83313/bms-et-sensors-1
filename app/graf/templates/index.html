@@ -458,10 +458,7 @@
     {{ render_panel("c12", "Matter Pressure (hPa)", "series", "seriesChannelList-c12", "seriesChannelToggleAll-c12") }}
     {% endif %}
     {% if show_matter_pm %}
-    {{ render_panel("c13", "Matter PM (ug/m3)", "series", "seriesChannelList-c13", "seriesChannelToggleAll-c13") }}
-    {% endif %}
-    {% if show_matter_iso14644_estimate %}
-    {{ render_panel("c14", "SPS30 Estimated ISO Proxy (not certified)", "series", "seriesChannelList-c14", "seriesChannelToggleAll-c14") }}
+    {{ render_panel("c13", "Matter SPS30 PM (ug/m3)", "series", "seriesChannelList-c13", "seriesChannelToggleAll-c13") }}
     {% endif %}
     {% if show_matter_battery %}
     {{ render_panel("c10", "Matter Battery", "series", "seriesChannelList-c10", "seriesChannelToggleAll-c10") }}
@@ -507,7 +504,6 @@
       c11: { kind: "series", labelKind: "matter", padding: 30, dataKey: "matter_humidity" },
       c12: { kind: "series", labelKind: "matter", padding: 30, dataKey: "matter_pressure" },
       c13: { kind: "series", labelKind: "matter", padding: 30, dataKey: "matter_pm" },
-      c14: { kind: "series", labelKind: "matter", padding: 42, dataKey: "matter_iso14644_estimate", iso14644Scale: true },
     };
     const seriesChartIds = chartIds.filter((chartId) => (chartConfigs[chartId] || {}).kind === "series");
     const chartModels = {};
@@ -527,10 +523,10 @@
     const normalizeModes = {};
     const yawFilterModes = {};
   </script>
-  <script src="./static/graf_zoom_state.js?v=matter-iso14644-1"></script>
-  <script src="./static/graf_ui_state.js?v=matter-iso14644-1"></script>
-  <script src="./static/graf_chart.js?v=matter-iso14644-1"></script>
-  <script src="./static/graf_exports.js?v=matter-iso14644-1"></script>
-  <script src="./static/graf_app.js?v=matter-iso14644-1"></script>
+  <script src="./static/graf_zoom_state.js?v=matter-sps30-pm"></script>
+  <script src="./static/graf_ui_state.js?v=matter-sps30-pm"></script>
+  <script src="./static/graf_chart.js?v=matter-sps30-pm"></script>
+  <script src="./static/graf_exports.js?v=matter-sps30-pm"></script>
+  <script src="./static/graf_app.js?v=matter-sps30-pm"></script>
 </body>
 </html>

@@ -162,16 +162,9 @@ function parseSeriesTags(name) {
 }
 
 const matterNodeAliases = {
-  "15": "BMS-TES3-974744"
+  "21": "Pico SPS30",
+  "25": "BMS-TES3-974744"
 };
-
-const iso14644ClassLimits = [
-  { label: "ISO 5", value: 3520 },
-  { label: "ISO 6", value: 35200 },
-  { label: "ISO 7", value: 352000 },
-  { label: "ISO 8", value: 3520000 },
-  { label: "ISO 9", value: 35200000 },
-];
 
 function prettyMatterName(rawName) {
   const {
@@ -186,19 +179,9 @@ function prettyMatterName(rawName) {
   if (clusterId === "1029") return `${nodeLabel} Humidity`;
   if (clusterId === "1027" && attributeId === "16") return `${nodeLabel} Pressure hPa`;
   if (clusterId === "1027") return `${nodeLabel} Pressure coarse`;
-  if (clusterId === "1068") return `${nodeLabel} PM1`;
-  if (clusterId === "1066") return `${nodeLabel} PM2.5`;
-  if (clusterId === "1069") return `${nodeLabel} PM10`;
-  if (clusterId === "4294048769" && attributeId === "0") return `${nodeLabel} SPS30 # PM0.5`;
-  if (clusterId === "4294048769" && attributeId === "1") return `${nodeLabel} SPS30 # PM1.0`;
-  if (clusterId === "4294048769" && attributeId === "2") return `${nodeLabel} SPS30 # PM2.5`;
-  if (clusterId === "4294048769" && attributeId === "3") return `${nodeLabel} SPS30 # PM4.0`;
-  if (clusterId === "4294048769" && attributeId === "4") return `${nodeLabel} SPS30 # PM10`;
-  if (clusterId === "4294048769" && attributeId === "5") return `${nodeLabel} SPS30 size`;
-  if (clusterId === "4294048769" && attributeId === "16") return `${nodeLabel} ISO proxy >=0.5um`;
-  if (clusterId === "4294048769" && attributeId === "17") return `${nodeLabel} ISO proxy >=1.0um`;
-  if (clusterId === "4294048769" && attributeId === "18") return `${nodeLabel} coarse proxy >=~4um`;
-  if (rawName.includes("iso_estimate=ge_0.5um_from_pm25")) return `${nodeLabel} ISO mass fallback >=0.5um`;
+  if (clusterId === "1068") return `${nodeLabel} PM1.0 ug/m3`;
+  if (clusterId === "1066") return `${nodeLabel} PM2.5 ug/m3`;
+  if (clusterId === "1069") return `${nodeLabel} PM10 ug/m3`;
   if (clusterId === "47" && (!attributeId || attributeId === "12")) return `${nodeLabel} Battery`;
   if (endpointId) return `${nodeLabel} EP${endpointId}`;
   return nodeLabel;
@@ -232,33 +215,6 @@ function lineStyleForSeries(name, deviceOrder = []) {
     { "stroke-dasharray": "10 3 2 3" },
   ];
   return styles[idx % styles.length] || {};
-}
-
-function formatParticleCount(value) {
-  if (!Number.isFinite(value)) return "";
-  if (value >= 1000000) return `${(value / 1000000).toFixed(value >= 10000000 ? 1 : 2)}M`;
-  if (value >= 1000) return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}k`;
-  return value.toFixed(0);
-}
-
-function iso14644YTransform(value) {
-  const safeValue = Math.max(1, Number(value) || 0);
-  return Math.log10(safeValue);
-}
-
-function iso14644YInverse(value) {
-  return 10 ** value;
-}
-
-function applyIso14644Scale(series) {
-  return (series || []).map((s) => ({
-    name: s.name,
-    points: (s.points || []).map((pt) => ({
-      ...pt,
-      y: iso14644YTransform(pt.y),
-      origY: pt.y,
-    })),
-  }));
 }
 
 function prettySeriesName(rawName) {
@@ -499,7 +455,6 @@ function renderChart(canvasId, hoverX = null) {
   }));
 
   const gridColor = "rgba(43,62,100,0.55)";
-  const isoScale = Boolean(getChartConfig(canvasId).iso14644Scale);
   for (let i = 1; i < 6; i += 1) {
     const gx = (p + (i / 6) * (w - p * 2)).toFixed(2);
     canvas.appendChild(svgEl("line", { x1: gx, y1: p, x2: gx, y2: h - p, stroke: gridColor, "stroke-width": 1 }));
@@ -511,33 +466,8 @@ function renderChart(canvasId, hoverX = null) {
       canvas.appendChild(svgEl("line", { x1: p, y1: gyPx.toFixed(2), x2: w - p, y2: gyPx.toFixed(2), stroke: gridColor, "stroke-width": 1 }));
     }
     const ly = i === 0 ? gyPx - 3 : gyPx + 9;
-    const gyLabel = isoScale && !normalizeModes[canvasId]
-      ? formatParticleCount(iso14644YInverse(gyVal))
-      : (normalizeModes[canvasId] ? (i / 4).toFixed(2) : gyVal.toFixed(2));
+    const gyLabel = normalizeModes[canvasId] ? (i / 4).toFixed(2) : gyVal.toFixed(2);
     canvas.appendChild(svgEl("text", { x: 4, y: ly.toFixed(2), fill: "#8ea6d9", "font-size": 10 })).textContent = gyLabel;
-  }
-
-  if (isoScale && !normalizeModes[canvasId]) {
-    iso14644ClassLimits.forEach((limit) => {
-      if (limit.value < iso14644YInverse(minY) || limit.value > iso14644YInverse(maxY)) return;
-      const y = sy(iso14644YTransform(limit.value));
-      const labelY = Math.min(h - p - 4, Math.max(p + 12, y - 5));
-      canvas.appendChild(svgEl("line", {
-        x1: p,
-        y1: y.toFixed(2),
-        x2: w - p,
-        y2: y.toFixed(2),
-        stroke: "rgba(250,204,21,0.55)",
-        "stroke-width": 1,
-        "stroke-dasharray": "5 4",
-      }));
-      canvas.appendChild(svgEl("text", {
-        x: (w - p - 76).toFixed(2),
-        y: labelY.toFixed(2),
-        fill: "#facc15",
-        "font-size": 11,
-      })).textContent = `${limit.label} ${formatParticleCount(limit.value)}`;
-    });
   }
 
   if (!series.length) {
@@ -724,8 +654,7 @@ function drawChart(canvasId, series, xBounds = null) {
   const rawSeries = series || [];
   const displaySeries = applyChartDisplayFilters(canvasId, rawSeries);
   const visibleSeries = filterSeriesByChart(canvasId, displaySeries);
-  const isoScale = Boolean(getChartConfig(canvasId).iso14644Scale);
-  const scaledVisibleSeries = isoScale ? applyIso14644Scale(visibleSeries) : visibleSeries;
+  const scaledVisibleSeries = visibleSeries;
 
   let minX = 0;
   let maxX = 1;
@@ -771,17 +700,6 @@ function drawChart(canvasId, series, xBounds = null) {
     if (ov && Number.isFinite(ov.min) && Number.isFinite(ov.max) && ov.max > ov.min) {
       minY = ov.min;
       maxY = ov.max;
-    } else if (isoScale) {
-      const isoPadding = 0.08;
-      const firstIsoLimit = iso14644ClassLimits[0].value;
-      const lastIsoLimit = iso14644ClassLimits[iso14644ClassLimits.length - 1].value;
-      const hasData = scaledVisibleSeries.some((s) => (s.points || []).length > 0);
-      minY = iso14644YTransform(firstIsoLimit) - isoPadding;
-      maxY = iso14644YTransform(lastIsoLimit) + isoPadding;
-      if (hasData) {
-        minY = Math.min(minY, autoMinY - isoPadding);
-        maxY = Math.max(maxY, autoMaxY + isoPadding);
-      }
     } else {
       minY = autoMinY;
       maxY = autoMaxY;

@@ -8,6 +8,7 @@ Firmware workspace for BMS DOA Matter nodes.
 - `esp32c6DevKitC/matter-node` - Matter over Thread node for `ESP32-C6-DevKitC-1-N4`
 - `esp32c6Pico/matter-thread-node` - Matter over Thread node for Waveshare `ESP32-C6-Pico`
 - `esp32c6Pico/matter-wifi-node` - Matter over Wi-Fi node for Waveshare `ESP32-C6-Pico`
+- `esp32c6Pico/matter-wifi-sps30-node` - Matter over Wi-Fi air-quality node for Waveshare `ESP32-C6-Pico` with Sensirion `SPS30`
 - `esp32c3SuperMini/matter-node` - Matter over Wi-Fi node for `ESP32-C3-SuperMini`
 - `m5stickc/matter-node` - Matter over Wi-Fi node for first-generation `M5StickC`
 - `m5stickcPlus2/matter-node` - Matter over Wi-Fi node for `M5StickC Plus2`

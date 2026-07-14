@@ -8,6 +8,7 @@ This repository contains firmware projects for BMS DOA Matter nodes.
 - `esp32c6DevKitC/matter-node` - Matter over Thread for `ESP32-C6-DevKitC`
 - `esp32c6Pico/matter-thread-node` - Matter over Thread for `ESP32-C6-Pico`
 - `esp32c6Pico/matter-wifi-node` - Matter over Wi-Fi for `ESP32-C6-Pico`
+- `esp32c6Pico/matter-wifi-sps30-node` - Matter over Wi-Fi with `SPS30` air-quality sensor for `ESP32-C6-Pico`
 - `esp32c3SuperMini/matter-node` - Matter over Wi-Fi for `ESP32-C3-SuperMini`
 - `m5stickc/matter-node` - Matter over Wi-Fi for first-generation `M5StickC`
 - `m5stickcPlus2/matter-node` - Matter over Wi-Fi for `M5StickC Plus2`

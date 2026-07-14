@@ -4,6 +4,7 @@
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_oneshot.h"
+#include "esp_attr.h"
 #include "esp_check.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -48,6 +49,7 @@
 #include <clusters/TemperatureMeasurement/AttributeIds.h>
 #include <clusters/TemperatureMeasurement/ClusterId.h>
 #include <platform/ConnectivityManager.h>
+#include <platform/internal/BLEManager.h>
 #include <platform/PlatformManager.h>
 #include <setup_payload/OnboardingCodesUtil.h>
 
@@ -115,12 +117,14 @@ constexpr uint32_t kUsbHeartbeatPeriodMs = BMS_USB_HEARTBEAT_PERIOD_MS;
 constexpr uint32_t kHeartbeatPeriodMs = BMS_HEARTBEAT_PERIOD_MS;
 constexpr uint32_t kBatterySaverTelemetryPeriodMs = BMS_BATTERY_SAVER_TELEMETRY_PERIOD_MS;
 constexpr uint32_t kBatterySaverHeartbeatPeriodMs = BMS_BATTERY_SAVER_HEARTBEAT_PERIOD_MS;
+constexpr int kMinCpuFreqMhz = 40;
 constexpr uint32_t kButtonPollPeriodMs = 100;
 constexpr uint32_t kBatterySaverButtonPollPeriodMs = 250;
 constexpr uint32_t kButtonDebounceMs = 30;
 constexpr uint32_t kCommissioningHoldMs = 7000;
 constexpr uint32_t kFactoryResetHoldMs = 15000;
 constexpr uint32_t kCommissioningWindowSeconds = 180;
+constexpr uint32_t kBleCommissioningBootMagic = 0xB1E0C0DE;
 constexpr uint32_t kBootIndicatorMs = 5000;
 constexpr uint32_t kIndicatorPeriodMs = 50;
 constexpr uint32_t kAirRebootDelayMs = 500;
@@ -225,6 +229,9 @@ struct IndicatorCtx {
 
 DeviceContext s_device;
 IndicatorCtx s_indicator;
+RTC_NOINIT_ATTR uint32_t s_ble_commissioning_boot_magic;
+bool s_ble_commissioning_boot_requested = false;
+bool s_ble_manager_shutdown = false;
 TickType_t s_boot_tick = 0;
 uint8_t s_test_event_enable_key[chip::TestEventTriggerDelegate::kEnableKeyLength] = {
     0x00, 0x11, 0x22, 0x33,
@@ -1055,10 +1062,70 @@ void update_network_state_cache()
     s_indicator.window_open = chip::Server::GetInstance().GetCommissioningWindowManager().IsCommissioningWindowOpen();
 }
 
+void set_ble_advertising_enabled(bool enabled, const char *reason)
+{
+    CHIP_ERROR err = chip::DeviceLayer::ConnectivityMgr().SetBLEAdvertisingEnabled(enabled);
+    if (err != CHIP_NO_ERROR) {
+        ESP_LOGW(TAG,
+                 "Failed to %s BLE commissioning advertising (%s): %s",
+                 enabled ? "enable" : "disable",
+                 reason,
+                 chip::ErrorStr(err));
+        return;
+    }
+    ESP_LOGI(TAG,
+             "BLE commissioning advertising %s (%s)",
+             enabled ? "enabled" : "disabled",
+             reason);
+}
+
+void shutdown_ble_if_commissioned(const char *reason)
+{
+#if CONFIG_USE_BLE_ONLY_FOR_COMMISSIONING
+    if (s_ble_manager_shutdown) {
+        return;
+    }
+    if (s_ble_commissioning_boot_requested) {
+        return;
+    }
+    if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
+        return;
+    }
+    if (chip::Server::GetInstance().GetCommissioningWindowManager().IsCommissioningWindowOpen()) {
+        return;
+    }
+    set_ble_advertising_enabled(false, reason);
+    chip::DeviceLayer::Internal::BLEMgr().Shutdown();
+    s_ble_manager_shutdown = true;
+    ESP_LOGI(TAG, "BLE manager shut down (%s)", reason);
+#else
+    if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
+        return;
+    }
+    if (chip::Server::GetInstance().GetCommissioningWindowManager().IsCommissioningWindowOpen()) {
+        return;
+    }
+    set_ble_advertising_enabled(false, reason);
+#endif
+}
+
+void restart_into_ble_commissioning_window()
+{
+    s_ble_commissioning_boot_magic = kBleCommissioningBootMagic;
+    ESP_LOGI(TAG, "Restarting into BLE commissioning window");
+    esp_restart();
+}
+
 void schedule_commissioning_window()
 {
     chip::DeviceLayer::PlatformMgr().ScheduleWork(
         [](intptr_t) {
+            if (s_ble_manager_shutdown &&
+                chip::Server::GetInstance().GetFabricTable().FabricCount() > 0) {
+                restart_into_ble_commissioning_window();
+                return;
+            }
+            set_ble_advertising_enabled(true, "boot-button");
             CHIP_ERROR err = chip::Server::GetInstance().GetCommissioningWindowManager()
                 .OpenBasicCommissioningWindow(
                     chip::System::Clock::Seconds32(kCommissioningWindowSeconds),
@@ -1083,7 +1150,7 @@ esp_err_t init_power_management()
 #if CONFIG_PM_ENABLE
     esp_pm_config_t pm_config = {
         .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
-        .min_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+        .min_freq_mhz = kMinCpuFreqMhz,
 #if CONFIG_FREERTOS_USE_TICKLESS_IDLE
         .light_sleep_enable = true,
 #else
@@ -1091,7 +1158,11 @@ esp_err_t init_power_management()
 #endif
     };
     ESP_RETURN_ON_ERROR(esp_pm_configure(&pm_config), TAG, "Failed to configure ESP power management");
-    ESP_LOGI(TAG, "ESP power management enabled (light_sleep=%d)", static_cast<int>(pm_config.light_sleep_enable));
+    ESP_LOGI(TAG,
+             "ESP power management enabled (min=%dMHz max=%dMHz light_sleep=%d)",
+             pm_config.min_freq_mhz,
+             pm_config.max_freq_mhz,
+             static_cast<int>(pm_config.light_sleep_enable));
 #else
     ESP_LOGI(TAG, "ESP power management disabled by sdkconfig");
 #endif
@@ -1100,12 +1171,12 @@ esp_err_t init_power_management()
 
 void enable_wifi_power_save()
 {
-    const esp_err_t ret = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    const esp_err_t ret = esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Wi-Fi modem power save request failed: %s", esp_err_to_name(ret));
         return;
     }
-    ESP_LOGI(TAG, "Wi-Fi modem power save enabled");
+    ESP_LOGI(TAG, "Wi-Fi modem power save enabled (MAX_MODEM)");
 }
 
 esp_err_t init_test_event_trigger_delegate()
@@ -1319,6 +1390,7 @@ void matter_event_callback(const chip::DeviceLayer::ChipDeviceEvent *event, intp
         ESP_LOGI(TAG, "Commissioning complete");
         update_network_state_cache();
         log_commissioning_state("commissioning-complete");
+        shutdown_ble_if_commissioned("commissioning-complete");
         break;
     case chip::DeviceLayer::DeviceEventType::kCommissioningSessionStarted:
         ESP_LOGI(TAG, "Commissioning session started");
@@ -1337,11 +1409,13 @@ void matter_event_callback(const chip::DeviceLayer::ChipDeviceEvent *event, intp
         s_indicator.window_open = false;
         ESP_LOGI(TAG, "Commissioning window closed");
         log_commissioning_state("window-closed");
+        shutdown_ble_if_commissioned("window-closed");
         break;
     case chip::DeviceLayer::DeviceEventType::kFabricCommitted:
         s_indicator.commissioned = chip::Server::GetInstance().GetFabricTable().FabricCount() > 0;
         ESP_LOGI(TAG, "Fabric committed");
         log_commissioning_state("fabric-committed");
+        shutdown_ble_if_commissioned("fabric-committed");
         break;
     case chip::DeviceLayer::DeviceEventType::kFabricRemoved:
         s_indicator.commissioned = chip::Server::GetInstance().GetFabricTable().FabricCount() > 0;
@@ -1370,12 +1444,18 @@ void matter_event_callback(const chip::DeviceLayer::ChipDeviceEvent *event, intp
 
 extern "C" void app_main(void)
 {
+    s_ble_commissioning_boot_requested = s_ble_commissioning_boot_magic == kBleCommissioningBootMagic;
+    s_ble_commissioning_boot_magic = 0;
+
     s_boot_tick = xTaskGetTickCount();
 
     ESP_LOGI(TAG, "Starting %s %s - Matter over Wi-Fi (firmware %s)",
              kBoardIdentity.vendor_name, kBoardIdentity.product_name,
              kBoardIdentity.software_version_str);
     ESP_LOGI(TAG, "Reset reason: %s", reset_reason_str(esp_reset_reason()));
+    if (s_ble_commissioning_boot_requested) {
+        ESP_LOGI(TAG, "BLE commissioning window requested before restart");
+    }
 
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -1498,6 +1578,14 @@ extern "C" void app_main(void)
 
     update_network_state_cache();
     log_commissioning_state("after-start");
+    chip::DeviceLayer::PlatformMgr().ScheduleWork(
+        [](intptr_t) {
+            if (s_ble_commissioning_boot_requested) {
+                schedule_commissioning_window();
+                return;
+            }
+            shutdown_ble_if_commissioned("after-start");
+        }, 0);
     log_onboarding_codes();
 
     xTaskCreate(indicator_task, "indicator_task", 3072, nullptr, 4, nullptr);

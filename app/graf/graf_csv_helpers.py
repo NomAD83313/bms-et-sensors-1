@@ -207,19 +207,11 @@ def matter_csv_column_name(series_name: str) -> str:
     elif cluster_id == "1027":
         parts.append("pressure_hpa")
     elif cluster_id == "1068":
-        parts.append("pm1_ugm3")
+        parts.append("pm1_ug_m3")
     elif cluster_id == "1066":
-        parts.append("pm25_ugm3")
+        parts.append("pm25_ug_m3")
     elif cluster_id == "1069":
-        parts.append("pm10_ugm3")
-    elif cluster_id == "4294048769" and attribute_id == "16":
-        parts.append("iso_proxy_ge05_particles_m3")
-    elif cluster_id == "4294048769" and attribute_id == "17":
-        parts.append("iso_proxy_ge1_particles_m3")
-    elif cluster_id == "4294048769" and attribute_id == "18":
-        parts.append("coarse_proxy_ge4_particles_m3")
-    elif cluster_id == "4294048769" and attribute_id:
-        parts.append(f"sps30_attr_{_sanitize(attribute_id)}")
+        parts.append("pm10_ug_m3")
     elif cluster_id:
         parts.append(f"cluster_{_sanitize(cluster_id)}")
     return "_".join(parts) if len(parts) > 1 else "matter_unknown"

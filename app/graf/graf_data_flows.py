@@ -19,7 +19,6 @@ def load_dashboard_panels(
     load_matter_humidity_series_fn,
     load_matter_pressure_series_fn,
     load_matter_pm_series_fn,
-    load_matter_iso14644_estimate_series_fn,
     load_matter_battery_series_fn,
     panel_raw_cadence_ms_fn,
 ):
@@ -37,7 +36,6 @@ def load_dashboard_panels(
         "matter_humidity": [],
         "matter_pressure": [],
         "matter_pm": [],
-        "matter_iso14644_estimate": [],
         "matter_battery": [],
     }
     panel_meta: dict[str, dict[str, Any]] = {
@@ -74,12 +72,6 @@ def load_dashboard_panels(
         panel_meta["matter_pressure"]["raw_cadence_ms"] = panel_raw_cadence_ms_fn("matter_pressure", start_expr, stop_expr)
         panels["matter_pm"] = load_matter_pm_series_fn(start_expr, stop_expr, window, raw_mode)
         panel_meta["matter_pm"]["raw_cadence_ms"] = panel_raw_cadence_ms_fn("matter_pm", start_expr, stop_expr)
-        panels["matter_iso14644_estimate"] = load_matter_iso14644_estimate_series_fn(start_expr, stop_expr, window, raw_mode)
-        panel_meta["matter_iso14644_estimate"]["raw_cadence_ms"] = panel_raw_cadence_ms_fn(
-            "matter_iso14644_estimate",
-            start_expr,
-            stop_expr,
-        )
         panels["matter_battery"] = load_matter_battery_series_fn(start_expr, stop_expr, window, raw_mode)
         panel_meta["matter_battery"]["raw_cadence_ms"] = panel_raw_cadence_ms_fn("matter_battery", start_expr, stop_expr)
     return panels, panel_meta

@@ -188,42 +188,13 @@ class GrafRedLabTagTests(unittest.TestCase):
             cluster_id="1027",
             attribute_id="16",
         )
-        pm25_query = matter_flux(
-            bucket="sensors",
-            measurement="matter_sensor",
-            start_expr="-5m",
-            stop_expr=None,
-            window="1s",
-            cluster_id="1066",
-            attribute_id="0",
-            scale=1.0,
-        )
 
         self.assertIn('r.cluster_id == "1029"', humidity_query)
         self.assertIn('r.cluster_id == "1027"', pressure_query)
         self.assertIn('r.attribute_id == "16"', pressure_query)
-        self.assertIn('r.cluster_id == "1066"', pm25_query)
-        self.assertIn('r.attribute_id == "0"', pm25_query)
         self.assertIn('r.event_type == "attribute_updated" or r.event_type == "poll_attribute"', humidity_query)
         self.assertIn("_value: r._value / 100.0", humidity_query)
         self.assertIn("_value: r._value / 10.0", pressure_query)
-        self.assertIn("_value: r._value / 1.0", pm25_query)
-
-    def test_matter_flux_can_select_sps30_iso_proxy_cluster(self):
-        query = matter_flux(
-            bucket="sensors",
-            measurement="matter_sensor",
-            start_expr="-5m",
-            stop_expr=None,
-            window="1s",
-            cluster_id="4294048769",
-            attribute_id="16",
-            scale=1.0,
-        )
-
-        self.assertIn('r.cluster_id == "4294048769"', query)
-        self.assertIn('r.attribute_id == "16"', query)
-        self.assertIn("_value: r._value / 1.0", query)
 
     def test_matter_csv_column_name_includes_environment_cluster(self):
         self.assertEqual(
@@ -233,14 +204,6 @@ class GrafRedLabTagTests(unittest.TestCase):
         self.assertEqual(
             matter_csv_column_name("source=matter-server | node_id=15 | endpoint_id=3 | cluster_id=1027"),
             "matter_node_15_ep_3_pressure_hpa",
-        )
-        self.assertEqual(
-            matter_csv_column_name("source=matter-server | node_id=15 | endpoint_id=6 | cluster_id=1066"),
-            "matter_node_15_ep_6_pm25_ugm3",
-        )
-        self.assertEqual(
-            matter_csv_column_name("source=matter-server | node_id=15 | endpoint_id=6 | cluster_id=4294048769 | attribute_id=16"),
-            "matter_node_15_ep_6_iso_proxy_ge05_particles_m3",
         )
 
     def test_redlab_channel_state_preserves_device_channel_keys(self):

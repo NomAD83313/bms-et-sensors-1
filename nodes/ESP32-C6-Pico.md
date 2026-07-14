@@ -11,6 +11,7 @@ Matter firmware variants for the BMS DOA `ESP32-C6-Pico` node.
 - RGB LED: onboard `WS2812` on `GPIO 8`
 - Button: `BOOT` on `GPIO 9`
 - Additional board logic: `TCA9554PWR` GPIO expander
+- Optional air-quality sensor: Sensirion `SPS30` over UART in the Wi-Fi SPS30 firmware
 
 ## Important Board Constraint
 
@@ -30,8 +31,17 @@ Practical meaning:
 
 ## Device Model
 
+Baseline Thread/Wi-Fi firmware:
+
 - Endpoint `1`: `Temperature Sensor` using the ESP32-C6 internal temperature sensor
 - Endpoint `2`: `Contact Sensor` using the `BOOT` button
+
+Wi-Fi SPS30 firmware (`esp32c6Pico/matter-wifi-sps30-node`):
+
+- Endpoint `1`: `Temperature Sensor` using the ESP32-C6 internal temperature sensor
+- Endpoint `2`: `Contact Sensor` using the `BOOT` button
+- Endpoint `3`: `Air Quality Sensor` with `AirQuality`, `PM1`, `PM2.5`, and `PM10` concentration clusters
+- `PM4.0` is read from the SPS30 and logged over serial, but Matter 1.5 does not provide a dedicated PM4 concentration cluster.
 
 ## Matter Identity
 
@@ -58,6 +68,30 @@ Wi-Fi firmware (`esp32c6Pico/matter-wifi-node`):
 - Setup passcode: `20202021`
 - Discriminator: `3584 (0xE00)`
 - Serial: runtime `BMS-C6PW-<MAC6>` from base MAC
+
+Wi-Fi SPS30 firmware (`esp32c6Pico/matter-wifi-sps30-node`):
+
+- VendorID: `0xFFF1`
+- VendorName: `BMS DOA`
+- ProductID: `0x8008`
+- ProductName: `ESP32-C6-Pico WiFi SPS30`
+- SoftwareVersion: current git commit
+- Setup passcode: `20202021`
+- Discriminator: `3584 (0xE00)`
+- Serial: runtime `BMS-C6PWS-<MAC6>` from base MAC
+
+## SPS30 UART Wiring
+
+The SPS30 Wi-Fi firmware uses `UART1`:
+
+- `GPIO16`: ESP32-C6 `TX` to SPS30 `RX`
+- `GPIO17`: ESP32-C6 `RX` from SPS30 `TX`
+- UART: `115200 8N1`
+- Shared `GND`
+
+The firmware leaves `UART0` for USB serial logs and keeps the board I2C pins
+`GPIO22/23` reserved for the onboard `TCA9554PWR`. The SPS30 module must be in
+UART interface mode before these pins are connected.
 
 Current lab node:
 
@@ -181,3 +215,7 @@ so this migration is intended to preserve existing pairing data.
 - `esp32c6Pico/matter-wifi-node/main/main.cpp`
 - `esp32c6Pico/matter-wifi-node/sdkconfig.defaults`
 - `esp32c6Pico/matter-wifi-node/CMakeLists.txt`
+- `esp32c6Pico/matter-wifi-sps30-node/main/main.cpp`
+- `esp32c6Pico/matter-wifi-sps30-node/main/sps30.cpp`
+- `esp32c6Pico/matter-wifi-sps30-node/sdkconfig.defaults`
+- `esp32c6Pico/matter-wifi-sps30-node/CMakeLists.txt`

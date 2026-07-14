@@ -29,8 +29,6 @@ from graf_series_helpers import (
 PYROMETERS_REGISTRY_PATH = os.getenv("PYROMETERS_REGISTRY", "/runtime/pyrometers-devices.json")
 _TIME_EXPR_RE = re.compile(r'time\(v:\s*"([^"]+)"\s*\)')
 _CADENCE_LOOKBACK = timedelta(minutes=15)
-_SPS30_DIAGNOSTIC_CLUSTER_ID = "4294048769"
-_SPS30_ISO14644_ATTRIBUTE_IDS = ("16",)
 
 
 def _load_pyrometer_serials(registry_path: str = PYROMETERS_REGISTRY_PATH) -> dict[str, str]:
@@ -368,25 +366,6 @@ def build_backend_services(
             )
         return series
 
-    def load_matter_iso14644_estimate_series(start_expr: str, stop_expr: str | None, window: str, raw_mode: bool) -> list[dict[str, Any]]:
-        del raw_mode
-        sps30_series: list[dict[str, Any]] = []
-        for attribute_id in _SPS30_ISO14644_ATTRIBUTE_IDS:
-            sps30_series.extend(
-                query_series(
-                    matter_query(
-                        start_expr,
-                        stop_expr,
-                        window,
-                        _SPS30_DIAGNOSTIC_CLUSTER_ID,
-                        attribute_id,
-                        scale=1.0,
-                    ),
-                    ["source", "node_id", "endpoint_id", "cluster_id", "attribute_id"],
-                )
-            )
-        return sps30_series
-
     def load_matter_environment_series(start_expr: str, stop_expr: str | None, window: str, raw_mode: bool) -> list[dict[str, Any]]:
         series: list[dict[str, Any]] = []
         series.extend(load_matter_series(start_expr, stop_expr, window, raw_mode))
@@ -480,22 +459,12 @@ def build_backend_services(
                 ["source", "node_id", "endpoint_id", "cluster_id", "attribute_id"],
             )
             return series_median_interval_ms(series, parse_iso_ts_fn)
-        if panel_key == "matter_iso14644_estimate":
+        if panel_key == "matter_pm":
             series: list[dict[str, Any]] = []
-            for attribute_id in _SPS30_ISO14644_ATTRIBUTE_IDS:
+            for cluster_id in ("1068", "1066", "1069"):
                 series.extend(
                     query_series(
-                        tail_flux(
-                            matter_query(
-                                cadence_start_expr,
-                                cadence_stop_expr,
-                                "__raw__",
-                                _SPS30_DIAGNOSTIC_CLUSTER_ID,
-                                attribute_id,
-                                scale=1.0,
-                            ),
-                            tail_n,
-                        ),
+                        tail_flux(matter_query(cadence_start_expr, cadence_stop_expr, "__raw__", cluster_id, "0", scale=1.0), tail_n),
                         ["source", "node_id", "endpoint_id", "cluster_id", "attribute_id"],
                     )
                 )
@@ -547,7 +516,6 @@ def build_backend_services(
         "load_matter_humidity_series_fn": load_matter_humidity_series,
         "load_matter_pressure_series_fn": load_matter_pressure_series,
         "load_matter_pm_series_fn": load_matter_pm_series,
-        "load_matter_iso14644_estimate_series_fn": load_matter_iso14644_estimate_series,
         "load_matter_environment_series_fn": load_matter_environment_series,
         "load_matter_battery_series_fn": load_matter_battery_series,
         "panel_raw_cadence_ms_fn": panel_raw_cadence_ms,
