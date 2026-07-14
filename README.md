@@ -56,7 +56,7 @@ Known BLE adapter policy:
 - Matter commissioning now uses either Raspberry Pi internal `hci0` or no BLE at all; the external USB BLE workflow is no longer used.
 - MediaTek Wi-Fi/AP combo BLE remains documented as unsupported for commissioning after repeated HCI-level failures.
 - ESP32-S-CAM Matter firmware no longer forces a second commissioning window after startup.
-- Raspberry Pi AP, Matter primary interface, and AP UI defaults now target `wlan1`.
+- Raspberry Pi AP, Matter primary interface, and AP UI defaults now target `wlan0`.
 
 ### v6.5.0
 

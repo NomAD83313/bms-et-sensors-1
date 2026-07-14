@@ -105,7 +105,7 @@ case "${MATTER_BLE_MODE}" in
     ;;
 esac
 
-export MATTER_PRIMARY_IF="${MATTER_PRIMARY_IF:-wlan1}"
+export MATTER_PRIMARY_IF="${MATTER_PRIMARY_IF:-wlan0}"
 
 echo ">>> Wi-Fi interfaces are left untouched. PRIMARY_INTERFACE=${MATTER_PRIMARY_IF}"
 echo ">>> Starting Matter profile services with ${MATTER_SERVER_BACKEND} backend..."
