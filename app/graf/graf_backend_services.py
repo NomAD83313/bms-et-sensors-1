@@ -298,9 +298,65 @@ def build_backend_services(
     def load_mscl_series(start_expr: str, stop_expr: str | None, window: str, raw_mode: bool) -> list[dict[str, Any]]:
         return sampled_mscl_series(start_expr, stop_expr, window, raw_mode=raw_mode)
 
+    def _parse_series_tags(name: str) -> dict[str, str]:
+        tags: dict[str, str] = {}
+        for part in str(name or "").split("|"):
+            item = part.strip()
+            if "=" not in item:
+                continue
+            key, value = item.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if key:
+                tags[key] = value
+        return tags
+
+    def _dedupe_redlab_series(series_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        grouped: dict[str, dict[str, Any]] = {}
+        for series in series_list:
+            tags = _parse_series_tags(str(series.get("name") or ""))
+            device = str(tags.get("device") or "")
+            channel = str(tags.get("channel") or "")
+            if not device or not channel:
+                key = str(series.get("name") or "")
+            else:
+                key = f"{device}|{channel}"
+
+            entry = grouped.setdefault(
+                key,
+                {
+                    "preferred_name": str(series.get("name") or ""),
+                    "has_named": False,
+                    "points": [],
+                },
+            )
+
+            channel_name = str(tags.get("channel_name") or "").strip()
+            if channel_name:
+                entry["has_named"] = True
+                entry["preferred_name"] = str(series.get("name") or "")
+
+            entry["points"].extend(list(series.get("points") or []))
+
+        out: list[dict[str, Any]] = []
+        for entry in grouped.values():
+            points = list(entry.get("points") or [])
+            points.sort(key=lambda p: str(p.get("t") or ""))
+            dedup_by_t: dict[str, dict[str, Any]] = {}
+            for p in points:
+                t = str(p.get("t") or "")
+                if not t:
+                    continue
+                dedup_by_t[t] = p
+            merged_points = [dedup_by_t[t] for t in sorted(dedup_by_t)]
+            out.append({"name": str(entry.get("preferred_name") or ""), "points": merged_points})
+        out.sort(key=lambda s: str(s.get("name") or ""))
+        return out
+
     def load_redlab_series(start_expr: str, stop_expr: str | None, window: str, raw_mode: bool) -> list[dict[str, Any]]:
         query = redlab_query(start_expr, stop_expr, "__raw__" if raw_mode else window)
-        return query_series(query, ["device", "channel", "field"])
+        series = query_series(query, ["device", "channel", "channel_name"])
+        return _dedupe_redlab_series(series)
 
     def load_almemo_series(start_expr: str, stop_expr: str | None, window: str, raw_mode: bool) -> list[dict[str, Any]]:
         del raw_mode

@@ -16,6 +16,9 @@ BOOTSTRAP_OUTLIER_DELTA_C = 5.0
 OUTLIER_MIN_STEP_C = float(os.getenv("REDLAB_OUTLIER_MIN_STEP_C", "300"))
 OUTLIER_MIN_RATE_C_PER_SEC = float(os.getenv("REDLAB_OUTLIER_MIN_RATE_C_PER_SEC", "500"))
 ACTIVE_CHANNELS_PATH = Path("/runtime/redlab_channels.json")
+_CHANNEL_NAME_CACHE: dict[str, str] = {}
+_CHANNEL_NAME_CACHE_MTIME_NS: int | None = None
+_CHANNEL_NAME_CACHE_DEVICE_ID: str | None = None
 TC_TYPE_LIMITS_C: dict[str, tuple[float, float]] = {
     "B": (0.0, 1820.0),
     "E": (-270.0, 1000.0),
@@ -32,19 +35,63 @@ def new_filter_state() -> dict:
     return {"last_valid_by_channel": {}}
 
 
+def _channel_names_for_device(device_id: str) -> dict[str, str]:
+    global _CHANNEL_NAME_CACHE, _CHANNEL_NAME_CACHE_MTIME_NS, _CHANNEL_NAME_CACHE_DEVICE_ID
+    try:
+        stat = ACTIVE_CHANNELS_PATH.stat()
+        mtime_ns = int(stat.st_mtime_ns)
+    except Exception:
+        _CHANNEL_NAME_CACHE = {}
+        _CHANNEL_NAME_CACHE_MTIME_NS = None
+        return {}
+
+    if _CHANNEL_NAME_CACHE_MTIME_NS == mtime_ns and _CHANNEL_NAME_CACHE_DEVICE_ID == device_id:
+        return dict(_CHANNEL_NAME_CACHE)
+
+    try:
+        raw = json.loads(ACTIVE_CHANNELS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        _CHANNEL_NAME_CACHE = {}
+        _CHANNEL_NAME_CACHE_MTIME_NS = mtime_ns
+        _CHANNEL_NAME_CACHE_DEVICE_ID = device_id
+        return {}
+
+    if not isinstance(raw, dict):
+        _CHANNEL_NAME_CACHE = {}
+        _CHANNEL_NAME_CACHE_MTIME_NS = mtime_ns
+        _CHANNEL_NAME_CACHE_DEVICE_ID = device_id
+        return {}
+
+    names: dict[str, str] = {}
+    for ch in range(CHANNEL_COUNT):
+        base_key = f"ch{ch}"
+        scoped_key = f"{device_id}|{base_key}" if device_id else ""
+        value = raw.get(scoped_key) if scoped_key and scoped_key in raw else raw.get(base_key)
+        if not isinstance(value, dict):
+            continue
+        name = str(value.get("name", "")).strip()
+        if name:
+            names[base_key] = name
+
+    _CHANNEL_NAME_CACHE = dict(names)
+    _CHANNEL_NAME_CACHE_MTIME_NS = mtime_ns
+    _CHANNEL_NAME_CACHE_DEVICE_ID = device_id
+    return names
+
+
 def build_points(batch: dict, device_id: str) -> tuple[list[Point], list[str]]:
     points = []
     log_data = []
     point_device_id = device_id or "redlab_unknown"
+    channel_names = _channel_names_for_device(point_device_id)
 
     for ch, temp in sorted(batch["values"].items()):
-        points.append(
-            Point("redlab")
-            .tag("device", point_device_id)
-            .tag("channel", f"ch{ch}")
-            .field("value", float(temp))
-            .time(batch["ts_ns"], WritePrecision.NS)
-        )
+        ch_key = f"ch{ch}"
+        point = Point("redlab").tag("device", point_device_id).tag("channel", ch_key)
+        channel_name = channel_names.get(ch_key)
+        if channel_name:
+            point = point.tag("channel_name", channel_name)
+        points.append(point.field("value", float(temp)).time(batch["ts_ns"], WritePrecision.NS))
         log_data.append(f"CH{ch}:{temp:.1f}")
     return points, log_data
 
@@ -169,7 +216,12 @@ def load_active_channels() -> set[int]:
             return set(range(CHANNEL_COUNT))
         active = set()
         for ch in range(CHANNEL_COUNT):
-            if raw.get(f"ch{ch}", True):
+            val = raw.get(f"ch{ch}", True)
+            if isinstance(val, dict):
+                enabled = bool(val.get("enabled", True))
+            else:
+                enabled = bool(val)
+            if enabled:
                 active.add(ch)
         return active
     except Exception:

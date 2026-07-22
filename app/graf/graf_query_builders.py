@@ -63,7 +63,7 @@ def redlab_flux(*, bucket: str, measurement: str, start_expr: str, stop_expr: st
         + '  |> filter(fn: (r) => r._field == "value")\n'
     )
     query += f"  |> aggregateWindow(every: {window}, fn: mean, createEmpty: false)\n"
-    query += '  |> keep(columns: ["_time", "_value", "device", "channel"])'
+    query += '  |> keep(columns: ["_time", "_value", "device", "channel", "channel_name"])'
     return query
 
 
@@ -76,7 +76,7 @@ def redlab_flux_raw(*, bucket: str, measurement: str, start_expr: str, stop_expr
         + f"  |> filter(fn: (r) => r._measurement == {measurement_q})\n"
         + '  |> filter(fn: (r) => r._field == "value")\n'
     )
-    query += '  |> keep(columns: ["_time", "_value", "device", "channel"])'
+    query += '  |> keep(columns: ["_time", "_value", "device", "channel", "channel_name"])'
     return query
 
 

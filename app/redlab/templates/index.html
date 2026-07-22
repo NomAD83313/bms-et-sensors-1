@@ -1401,10 +1401,24 @@
                     nameOverrides[key] = val;
                 });
             });
-            if (Object.keys(nameOverrides).length) {
-                const grafUrl = new URL("/graf/redlab", window.location.origin);
-                grafUrl.searchParams.set("channel_names", encodeURIComponent(JSON.stringify(nameOverrides)));
-                window.open(grafUrl.toString(), "_blank", "noopener,noreferrer");
+            if (data.ok && Object.keys(nameOverrides).length) {
+                try {
+                    const stateRes = await fetch("api/redlab/channels");
+                    const stateData = await (stateRes.ok ? stateRes.json() : Promise.resolve({ channels: {} }));
+                    const payload = Object.assign({}, (stateData && stateData.channels) || {});
+                    Object.entries(nameOverrides).forEach(([key, name]) => {
+                        const prev = payload[key];
+                        const enabled = (prev && typeof prev === "object") ? (prev.enabled !== false) : (prev !== false);
+                        payload[key] = { enabled, name: String(name || "") };
+                    });
+                    await fetch("api/redlab/channels", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload),
+                    });
+                } catch (_) {
+                    // Keep thermocouple-type apply result visible even if name sync failed.
+                }
             }
             setText("tcStatus", data.ok ? "Saved" : (data.error || "error"));
         }

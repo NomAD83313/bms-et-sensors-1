@@ -232,7 +232,9 @@ function prettySeriesName(rawName) {
   if (name.startsWith("redlab:")) {
     const rest = name.slice("redlab:".length);
     if (rest.startsWith("channel=")) return `RedLab ${rest.split("=", 2)[1] || "channel"}`;
-    const { device = "", channel = "" } = parseSeriesTags(rest);
+    const { device = "", channel = "", channel_name: channelName = "" } = parseSeriesTags(rest);
+    const dbName = String(channelName || "").trim();
+    if (dbName) return dbName;
     const displayDevice = shortRedlabDeviceName(device);
     const displayKey = displayDevice && channel ? `${device}|${channel}` : channel;
     const customName = (typeof redlabDisplayNameForKey === "function")

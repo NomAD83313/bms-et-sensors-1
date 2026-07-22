@@ -433,6 +433,8 @@ function redlabLineKey(rawName) {
 
 function redlabLineLabel(rawName) {
   const { device, channel } = redlabSeriesParts(rawName);
+  const dbName = String(seriesTagValue(rawName, "channel_name") || "").trim();
+  if (dbName) return dbName;
   const lineKey = redlabLineKey(rawName);
   const customName = redlabDisplayNameForKey(lineKey);
   if (customName) return customName;
@@ -605,7 +607,7 @@ function renderTempChannelList(series) {
       const key = entry.key;
       appendTempItem(row, {
         ...entry,
-        label: entry.channel ? `${entry.deviceLabel || deviceLabel} ${entry.channel}` : entry.label,
+        label: entry.label || (entry.channel ? `${entry.deviceLabel || deviceLabel} ${entry.channel}` : `${entry.deviceLabel || deviceLabel}`),
         checked: tempChannelSelection[key] !== false,
         onchange: async (event) => {
           tempChannelSelection[key] = event.currentTarget.checked;

@@ -4,6 +4,7 @@ import sys
 import json
 import subprocess
 import threading
+from pathlib import Path
 from datetime import datetime, timezone
 
 from flask import Flask, jsonify, request, render_template
@@ -68,6 +69,8 @@ REDLAB_REENUMERATION_RESTART_COOLDOWN_SECONDS = max(0.0, float(os.getenv("REDLAB
 REDLAB_WRITE_QUEUE_MAX_BATCHES = max(1, int(os.getenv("REDLAB_WRITE_QUEUE_MAX_BATCHES", "600")))
 REDLAB_WRITE_RETRY_SECONDS = max(0.1, float(os.getenv("REDLAB_WRITE_RETRY_SECONDS", "1.0")))
 _REDLAB_REENUMERATION_LAST_RESTART_ENV = "_REDLAB_REENUMERATION_LAST_RESTART_TS"
+REDLAB_CHANNEL_STATE_PATH = Path("/runtime/redlab_channels.json")
+REDLAB_CHANNEL_KEYS = [f"ch{i}" for i in range(CHANNEL_COUNT)]
 
 app = Flask(__name__)
 
@@ -243,6 +246,59 @@ def _active_runtime():
     return None
 
 
+def _is_redlab_selection_key(key: str) -> bool:
+    if key in REDLAB_CHANNEL_KEYS:
+        return True
+    if "|" not in key:
+        return False
+    device, channel = key.split("|", 1)
+    return bool(device.strip()) and channel in REDLAB_CHANNEL_KEYS
+
+
+def _default_channel_state() -> dict[str, object]:
+    return {key: True for key in REDLAB_CHANNEL_KEYS}
+
+
+def _load_channel_state() -> dict[str, object]:
+    try:
+        raw = json.loads(REDLAB_CHANNEL_STATE_PATH.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return _default_channel_state()
+    except Exception:
+        return _default_channel_state()
+
+    out: dict[str, object] = _default_channel_state()
+    for key, value in raw.items():
+        if not _is_redlab_selection_key(str(key)):
+            continue
+        if isinstance(value, dict):
+            out[str(key)] = {
+                "enabled": bool(value.get("enabled", True)),
+                "name": str(value.get("name", "")),
+            }
+        else:
+            out[str(key)] = bool(value)
+    return out
+
+
+def _save_channel_state(payload: dict) -> dict[str, object]:
+    out: dict[str, object] = _default_channel_state()
+    for raw_key, value in payload.items():
+        key = str(raw_key)
+        if not _is_redlab_selection_key(key):
+            continue
+        if isinstance(value, dict):
+            enabled = bool(value.get("enabled", True))
+            name = str(value.get("name", "")).strip()
+            out[key] = {"enabled": enabled, "name": name} if name else enabled
+        else:
+            out[key] = bool(value)
+
+    REDLAB_CHANNEL_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    REDLAB_CHANNEL_STATE_PATH.write_text(json.dumps(out, indent=2, sort_keys=True), encoding="utf-8")
+    return out
+
+
 @app.get("/")
 def index():
     return render_template("index.html", tc_types=_tc_type_labels())
@@ -269,6 +325,19 @@ def api_devices():
         )
     except Exception as exc:
         return jsonify(ok=False, devices=[], count=0, error=str(exc)), 500
+
+
+@app.get("/api/redlab/channels")
+def get_redlab_channels_state():
+    return jsonify(ok=True, channels=_load_channel_state())
+
+
+@app.post("/api/redlab/channels")
+def set_redlab_channels_state():
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify(ok=False, error="Expected JSON object"), 400
+    return jsonify(ok=True, channels=_save_channel_state(payload))
 
 
 @app.get("/api/device/<device_id>/health")
