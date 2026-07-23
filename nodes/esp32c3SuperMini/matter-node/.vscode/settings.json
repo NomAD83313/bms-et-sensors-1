@@ -1,0 +1,10 @@
+{
+  "idf.currentSetup": "/home/nomad375/.espressif/v5.4.1/esp-idf",
+  "idf.adapterTargetName": "esp32c3",
+  "idf.openOcdConfigs": [
+    "board/esp32c3-builtin.cfg"
+  ],
+  "idf.port": "/dev/ttyACM0",
+  "terminal.integrated.cwd": "${workspaceFolder}",
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json"
+}
