@@ -26,11 +26,14 @@ load_env
 AP_NAME="${AP_NAME:-rpi-ap}"
 AP_SECONDARY_NAME=""
 AP_INTERFACE="${AP_INTERFACE:-}"
+AP_SECONDARY_INTERFACE="${AP_SECONDARY_INTERFACE:-}"
 AP_SSID="${AP_SSID:-BMSensors}"
 AP_PASSWORD="${AP_PASSWORD:-ChangeMe12345}"
 AP_BAND="${AP_BAND:-bg}"   # bg or a
 AP_CHANNEL="${AP_CHANNEL:-6}"
 AP_COUNTRY="${AP_COUNTRY:-DE}"
+AP_WIFI_IPV4_CIDR="${AP_WIFI_IPV4_CIDR:-10.42.0.1/24}"
+AP_ETH_IPV4_CIDR="${AP_ETH_IPV4_CIDR:-10.42.1.1/24}"
 AP_LOCAL_DNS_ENABLE="${AP_LOCAL_DNS_ENABLE:-true}"
 AP_LOCAL_DNS_NAME="${AP_LOCAL_DNS_NAME:-$(hostnamectl --static 2>/dev/null || hostname).internal}"
 
@@ -119,8 +122,9 @@ device_exists() {
 
 configure_ap_on_ethernet() {
   local ap_if="$1"
+  local ap_cidr="$2"
 
-  echo ">>> Configure shared Ethernet access on interface: ${ap_if}"
+  echo ">>> Configure shared Ethernet access on interface: ${ap_if} (${ap_cidr})"
 
   local eth_profile="${AP_NAME}-eth"
   if nmcli -t -f NAME connection show | grep -Fxq "${eth_profile}"; then
@@ -128,15 +132,15 @@ configure_ap_on_ethernet() {
       connection.interface-name "${ap_if}" \
       connection.autoconnect yes \
       ipv4.method shared \
+      ipv4.addresses "${ap_cidr}" \
       ipv6.method link-local
   else
-    run_nmcli connection add type ethernet ifname "${ap_if}" con-name "${eth_profile}" autoconnect yes ipv4.method shared ipv6.method link-local
+    run_nmcli connection add type ethernet ifname "${ap_if}" con-name "${eth_profile}" autoconnect yes ipv4.method shared ipv4.addresses "${ap_cidr}" ipv6.method link-local
   fi
 
-  run_nmcli connection up "${eth_profile}" ifname "${ap_if}" || {
-    echo "ERROR: failed to bring up AP connection '${eth_profile}'." >&2
-    exit 1
-  }
+  if ! run_nmcli connection up "${eth_profile}" ifname "${ap_if}"; then
+    echo "WARNING: could not bring up secondary AP connection '${eth_profile}' on '${ap_if}'. Continuing with the primary AP configuration." >&2
+  fi
 }
 
 ensure_nm_running() {
@@ -170,8 +174,9 @@ set_regulatory_domain() {
 configure_ap_on_builtin_wifi() {
   local ap_if="$1"
   local profile="${2:-${AP_NAME}}"
+  local ap_cidr="$3"
 
-  echo ">>> Configure AP '${profile}' on built-in Wi-Fi: ${ap_if}"
+  echo ">>> Configure AP '${profile}' on built-in Wi-Fi: ${ap_if} (${ap_cidr})"
 
   # Reuse existing AP profile if present, otherwise create.
   if nmcli -t -f NAME connection show | grep -Fxq "${profile}"; then
@@ -189,6 +194,7 @@ configure_ap_on_builtin_wifi() {
       wifi-sec.pmf 2 \
       wifi-sec.psk "${AP_PASSWORD}" \
       ipv4.method shared \
+      ipv4.addresses "${ap_cidr}" \
       ipv6.method link-local
   else
     run_nmcli connection add type wifi ifname "${ap_if}" con-name "${profile}" ssid "${AP_SSID}"
@@ -205,6 +211,7 @@ configure_ap_on_builtin_wifi() {
       wifi-sec.pmf 2 \
       wifi-sec.psk "${AP_PASSWORD}" \
       ipv4.method shared \
+        ipv4.addresses "${ap_cidr}" \
       ipv6.method link-local
   fi
 
@@ -349,7 +356,11 @@ main() {
   ensure_nm_running
   validate_ap_password
 
-  local ap_if ap_type builtin_wifi_if
+  local ap_if ap_type secondary_if secondary_type
+  local primary_profile="${AP_NAME}"
+  local secondary_profile=""
+  local primary_cidr=""
+  local secondary_cidr=""
 
   # Collect available Wi‑Fi interfaces early for potential secondary AP.
   mapfile -t wifi_ifaces < <(list_wifi_ifaces) || true
@@ -360,32 +371,6 @@ main() {
       echo "ERROR: configured AP_INTERFACE '${ap_if}' not found." >&2
       exit 1
     fi
-
-    ap_type="$(get_device_type "${ap_if}")"
-    case "${ap_type}" in
-      wifi)
-        set_regulatory_domain
-        configure_ap_on_builtin_wifi "${ap_if}"
-        ;;
-      ethernet)
-        # Primary: configure Ethernet shared access
-        configure_ap_on_ethernet "${ap_if}"
-
-        # If a built-in Wi‑Fi exists, also configure it as a secondary AP
-        if [[ "${#wifi_ifaces[@]}" -gt 0 ]]; then
-          builtin_wifi_if="$(pick_builtin_wifi "${wifi_ifaces[@]}")" || true
-        fi
-        if [[ -n "${builtin_wifi_if}" ]]; then
-          set_regulatory_domain
-          AP_SECONDARY_NAME="${AP_NAME}-wifi"
-          configure_ap_on_builtin_wifi "${builtin_wifi_if}" "${AP_SECONDARY_NAME}"
-        fi
-        ;;
-      *)
-        echo "ERROR: configured AP_INTERFACE '${ap_if}' is not a supported interface type: ${ap_type}" >&2
-        exit 1
-        ;;
-    esac
   else
     if [[ "${#wifi_ifaces[@]}" -eq 0 ]]; then
       echo "ERROR: no Wi-Fi interfaces found." >&2
@@ -396,14 +381,80 @@ main() {
       echo "ERROR: could not detect built-in Wi-Fi (non-USB) interface." >&2
       exit 1
     }
+  fi
 
-    set_regulatory_domain
-    configure_ap_on_builtin_wifi "${ap_if}"
+  ap_type="$(get_device_type "${ap_if}")"
+  case "${ap_type}" in
+    wifi)
+      primary_cidr="${AP_WIFI_IPV4_CIDR}"
+      ;;
+    ethernet)
+      primary_cidr="${AP_ETH_IPV4_CIDR}"
+      ;;
+    *)
+      primary_cidr=""
+      ;;
+  esac
+
+  case "${ap_type}" in
+    wifi)
+      set_regulatory_domain
+      configure_ap_on_builtin_wifi "${ap_if}" "${primary_profile}" "${primary_cidr}"
+      ;;
+    ethernet)
+      # Primary: configure Ethernet shared access
+      configure_ap_on_ethernet "${ap_if}" "${primary_cidr}"
+      ;;
+    *)
+      echo "ERROR: configured AP_INTERFACE '${ap_if}' is not a supported interface type: ${ap_type}" >&2
+      exit 1
+      ;;
+  esac
+
+  if [[ -n "${AP_SECONDARY_INTERFACE}" ]]; then
+    secondary_if="${AP_SECONDARY_INTERFACE}"
+    if [[ "${secondary_if}" == "${ap_if}" ]]; then
+      echo "INFO: AP_SECONDARY_INTERFACE matches the primary interface; skipping secondary AP configuration."
+    elif ! device_exists "${secondary_if}"; then
+      echo "ERROR: configured AP_SECONDARY_INTERFACE '${secondary_if}' not found." >&2
+      exit 1
+    else
+      secondary_type="$(get_device_type "${secondary_if}")"
+      case "${secondary_type}" in
+        wifi)
+          secondary_cidr="${AP_WIFI_IPV4_CIDR}"
+          set_regulatory_domain
+          secondary_profile="${AP_NAME}-wifi"
+          AP_SECONDARY_NAME="${secondary_profile}"
+          configure_ap_on_builtin_wifi "${secondary_if}" "${secondary_profile}" "${secondary_cidr}"
+          ;;
+        ethernet)
+          secondary_cidr="${AP_ETH_IPV4_CIDR}"
+          secondary_profile="${AP_NAME}-eth"
+          AP_SECONDARY_NAME="${secondary_profile}"
+          configure_ap_on_ethernet "${secondary_if}" "${secondary_cidr}"
+          ;;
+        *)
+          echo "ERROR: configured AP_SECONDARY_INTERFACE '${secondary_if}' is not a supported interface type: ${secondary_type}" >&2
+          exit 1
+          ;;
+      esac
+    fi
+  elif [[ "${ap_type}" == "ethernet" ]]; then
+    # Preserve legacy behavior: if Ethernet is primary, add a built-in Wi‑Fi AP as secondary when available.
+    if [[ "${#wifi_ifaces[@]}" -gt 0 ]]; then
+      secondary_if="$(pick_builtin_wifi "${wifi_ifaces[@]}")" || true
+    fi
+    if [[ -n "${secondary_if}" ]]; then
+      set_regulatory_domain
+      AP_SECONDARY_NAME="${AP_NAME}-wifi"
+      configure_ap_on_builtin_wifi "${secondary_if}" "${AP_SECONDARY_NAME}" "${AP_WIFI_IPV4_CIDR}"
+    fi
   fi
 
   # Prepare list of AP interfaces for auxiliary steps
   ap_ifaces=("${ap_if}")
-  [[ -n "${builtin_wifi_if}" ]] && ap_ifaces+=("${builtin_wifi_if}")
+  [[ -n "${secondary_if}" ]] && ap_ifaces+=("${secondary_if}")
 
   # Configure local DNS alias for the primary AP and adjust other Wi‑Fi devices
   configure_local_dns_alias "${ap_if}"
